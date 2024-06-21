@@ -36,6 +36,8 @@ iree_cc_library(
     "Passes.h"
   SRCS
     "TestPass.cpp"
+    "ConvertLinalgNamedToRock.cpp"
+    "Passes.cpp"
   DEPS
     ::PassHeaders
     ::PassesIncGen

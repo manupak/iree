@@ -15,4 +15,10 @@ def TestPass :
   let constructor = "mlir::iree_compiler::Rocmlir::createTestPass()";
 }
 
+def ConvertLinalgNamedToRock :
+    InterfacePass<"rocmlir-iree-convert-linalg-named-to-rock", "mlir::FunctionOpInterface"> {
+  let summary = "This is a rocMLIR IREE linalg named to rock conversion pass";
+  let constructor = "mlir::iree_compiler::Rocmlir::createConvertLinalgNamedToRockPass()";
+}
+
 #endif // IREE_COMPILER_PLUGINS_INPUT_TORCH_INPUTCONVERSION_PASSES

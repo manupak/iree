@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
+#include "Passes/Passes.h"
 // #include "mlir/InitRocMLIRPasses.h"
 // #include "mlir/InitRocMLIRDialects.h"
 // #include "torch-mlir/Conversion/Passes.h"
@@ -32,7 +33,7 @@ struct RocmlirSession
     : public PluginSession<RocmlirSession, RocmlirOptions,
                            PluginActivationPolicy::DefaultActivated> {
   static void registerPasses() {
-    // mlir::registerRocMLIRPasses();
+    mlir::iree_compiler::Rocmlir::registerRocmlirIREEPasses();
   }
 
   void onRegisterDialects(DialectRegistry &registry) override {

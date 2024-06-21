@@ -88,14 +88,12 @@ iree_cc_library(
     MLIRSideEffectInterfaces
 )
 
-file(GLOB _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/*.cpp")
-list(REMOVE_ITEM _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/ViewToTransform.cpp")
-list(REMOVE_ITEM _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/CheckResidency.cpp")
+file(GLOB _RockDialectTuning_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Tuning/*.cpp")
 iree_cc_library(
   NAME
-    RockDialectTransforms
+    RockDialectTuning
   SRCS
-    ${_RockDialectTransforms_SRCS}
+    ${_RockDialectTuning_SRCS}
   DEPS
     ::defs
     ::RockDialectGen
@@ -118,6 +116,67 @@ iree_cc_library(
     MLIRInferTypeOpInterface
     MLIRSideEffectInterfaces
 )
+
+file(GLOB _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/*.cpp")
+list(REMOVE_ITEM _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/ViewToTransform.cpp")
+list(REMOVE_ITEM _RockDialectTransforms_SRCS "${ROCMLIR_ROOT_DIR}/mlir/lib/Dialect/Rock/Transforms/CheckResidency.cpp")
+iree_cc_library(
+  NAME
+    RockDialectTransforms
+  SRCS
+    ${_RockDialectTransforms_SRCS}
+  DEPS
+    ::defs
+    ::RockDialectGen
+    ::RockAttrDefsIncGen
+    ::RockTuningParamAttrInterfaceIncGen
+    ::RockAccelTuningParamAttrInterfaceIncGen
+    ::RockGemmWrapperInterfaceIncGen
+    ::RockConvInterfaceIncGen
+    ::RockAcceptingViewOpInterfaceIncGen
+    ::RockWriterOpInterfaceIncGen
+    ::RockPassesIncGen
+    ::RockDialectTuning
+    MLIRBytecodeOpInterface
+    MLIRBytecodeReader
+    MLIRBytecodeWriter
+    MLIRFuncDialect
+    MLIRIR
+    MLIRInferIntRangeInterface
+    MLIRSupport
+    MLIRControlFlowInterfaces
+    MLIRInferTypeOpInterface
+    MLIRSideEffectInterfaces
+)
+
+
+# iree_cc_library(
+#   NAME
+#     RockDialectConversions
+#   SRCS
+#     "${ROCMLIR_ROOT_DIR}/mlir/lib/Conversion/RockToGPU/RockToGPU.cpp"
+#   DEPS
+#     ::defs
+#     ::RockDialectGen
+#     ::RockAttrDefsIncGen
+#     ::RockTuningParamAttrInterfaceIncGen
+#     ::RockAccelTuningParamAttrInterfaceIncGen
+#     ::RockGemmWrapperInterfaceIncGen
+#     ::RockConvInterfaceIncGen
+#     ::RockAcceptingViewOpInterfaceIncGen
+#     ::RockWriterOpInterfaceIncGen
+#     ::RockConversionPassesIncGen
+#     MLIRBytecodeOpInterface
+#     MLIRBytecodeReader
+#     MLIRBytecodeWriter
+#     MLIRFuncDialect
+#     MLIRIR
+#     MLIRInferIntRangeInterface
+#     MLIRSupport
+#     MLIRControlFlowInterfaces
+#     MLIRInferTypeOpInterface
+#     MLIRSideEffectInterfaces
+# )
 
 iree_tablegen_library(
   NAME
@@ -170,6 +229,15 @@ iree_tablegen_library(
     "${ROCMLIR_ROOT_DIR}/mlir/include/mlir/Dialect/Rock/Passes.td"
   OUTS
     -gen-pass-decls mlir/Dialect/Rock/Passes.h.inc
+)
+
+iree_tablegen_library(
+  NAME
+    RockConversionPassesIncGen
+  TD_FILE
+    "${ROCMLIR_ROOT_DIR}/mlir/include/mlir/Conversion/RocMLIRPasses.td"
+  OUTS
+    -gen-pass-decls mlir/Dialect/Rock/RocMLIRConversions.h.inc
 )
 
 function(add_iree_tablegen_rock_interface interface)

@@ -16,6 +16,12 @@ namespace mlir::iree_compiler::Rocmlir {
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createTestPass();
 
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createConvertLinalgNamedToRockPass();
+
+/// Adds the `kernel` pipeline to the `OpPassManager`.
+void buildKernelPipeline(OpPassManager &pm);
+
 
 //===----------------------------------------------------------------------===//
 // Register all Passes
