@@ -16,6 +16,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/RocMLIRConversions.h.inc"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+
 
 #include "mlir/Dialect/Rock/Passes.h"
 
@@ -27,12 +31,36 @@ namespace {
 } // namespace
 
 void buildKernelPipeline(OpPassManager &pm) {
+  {
+    auto &funcPm = pm.nest<func::FuncOp>();
+    //linalg to rock
+    funcPm.addPass(createConvertLinalgNamedToRockPass());
+
+    //bufferization
+    funcPm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
+    funcPm.addPass(createLinalgFoldUnitExtentDimsPass());
+    bufferization::OneShotBufferizationOptions bufOpts;
+    bufOpts.allowReturnAllocsFromLoops = true;
+    bufOpts.bufferizeFunctionBoundaries = true;
+    bufOpts.setFunctionBoundaryTypeConversion(
+        bufferization::LayoutMapOption::IdentityLayoutMap);
+    bufOpts.unknownTypeConverterFn =
+        [](Value value, Attribute memorySpace,
+          const bufferization::BufferizationOptions &options) {
+          return bufferization::getMemRefTypeWithStaticIdentityLayout(
+              value.getType().cast<TensorType>(), memorySpace);
+        };
+    // bufferization::BufferizationOptions::LayoutMapOption::IdentityLayoutMap;
+    pm.addPass(createOneShotBufferizePass(bufOpts));
+    pm.addPass(bufferization::createBufferResultsToOutParamsPass());
+  }
+
+  auto &funcPm = pm.nest<func::FuncOp>();
   // rock lowering (tuning, global to block)
   /* rocmlir-opt --rock-affix-params --rock-conv-to-gemm
    *   --rock-fold-broadcast --rock-affix-params --rock-gemm-to-gridwise
    *   --rock-regularize  --rock-gridwise-gemm-to-blockwise
    */
-  auto &funcPm = pm.nest<func::FuncOp>();
   funcPm.addPass(rock::createRockAffixTuningParametersPass(
       rock::RockAffixTuningParametersPassOptions{false}));
   funcPm.addPass(rock::createRockConvToGemmPass());
@@ -76,6 +104,11 @@ void buildKernelPipeline(OpPassManager &pm) {
 void registerRocmlirIREEPasses() {
   // Generated.
   registerPasses();
+
+  mlir::PassPipelineRegistration<>(
+      "rock-pipeline",
+      "Pipeline to lower linalg to rock to backend",
+      buildKernelPipeline);
 }
 
 } // namespace mlir::iree_compiler::TorchInput

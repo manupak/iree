@@ -9,6 +9,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "Passes/Passes.h"
+#include "mlir/Dialect/Rock/Transforms/BufferizableOpInterfaceImpl.h"
 // #include "mlir/InitRocMLIRPasses.h"
 // #include "mlir/InitRocMLIRDialects.h"
 // #include "torch-mlir/Conversion/Passes.h"
@@ -38,6 +39,8 @@ struct RocmlirSession
 
   void onRegisterDialects(DialectRegistry &registry) override {
     registry.insert<mlir::rock::RockDialect>();
+    // Register bufferization hooks for rock interfaces
+    rock::registerBufferizableOpInterfaceExternalModels(registry);
   }
 };
 
