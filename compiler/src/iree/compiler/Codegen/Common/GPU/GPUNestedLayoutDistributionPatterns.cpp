@@ -739,7 +739,7 @@ struct DistributeDenseConstant final
         MemRefType::get(vectorTy.getShape(), vectorTy.getElementType(), MemRefLayoutAttrInterface{}, addressSpaceAttr);
 
     // Allocate a buffer for this vector.
-    auto alloc = rewriter.create<memref::AllocOp>(loc, memrefType);
+    auto alloc = rewriter.create<memref::AllocaOp>(loc, memrefType);
 
     // Zero indices.
     Value zero = rewriter.create<arith::ConstantOp>(
@@ -822,6 +822,32 @@ struct DistributeDenseConstant final
 struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
   using OpDistributionPattern::OpDistributionPattern;
 
+  VectorValue generateSlicedStep(OpBuilder& builder, Location loc, ArrayRef<int64_t> dimStrides, ArrayRef<int64_t> dimLens, ArrayRef<Value> dimIdxs, int64_t distributedLen) const {
+    SmallVector<APInt> offsets;
+    VectorType offsetType = VectorType::get({distributedLen}, builder.getIndexType());
+    offsets.reserve(distributedLen);
+    for(int64_t i=0; i<distributedLen; i++){
+      int64_t offset = 0;
+      for(auto[dimStride, dimLen] : zip(dimStrides, dimLens)){
+        if(dimStride != 0){
+          offset += (i % dimStride) + (i/dimStride)*(dimStride*dimLen); 
+        }
+      }
+      offsets.push_back(APInt(/*width=*/64, offset));
+    }
+    auto constOffset = builder.create<arith::ConstantOp>(loc, DenseElementsAttr::get(offsetType, offsets));
+    Value finalOffset = constOffset;
+    for(auto[dimStride, dimIdx] : zip(dimStrides, dimIdxs)){
+      if(dimStride != 0){
+        auto strideVal = builder.create<arith::ConstantIndexOp>(loc, dimStride);
+        auto dimIdxOffsetPerElem = builder.create<arith::MulIOp>(loc, strideVal, dimIdx);
+        auto dimIdxOffset = builder.create<vector::BroadcastOp>(loc, offsetType, dimIdxOffsetPerElem);
+        finalOffset = builder.create<arith::AddIOp>(loc, finalOffset, dimIdxOffset);
+      }
+    }
+    return cast<VectorValue>(finalOffset);
+  }
+
   DistributeStep(MLIRContext *context, Value threadId,
                           int64_t subgroupSize)
       : OpDistributionPattern(context), threadId(threadId),
@@ -840,28 +866,29 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     SmallVector<Value> subgroupIndices, threadIndices;
     populateWarpAndThreadIndices(rewriter, threadId, subgroupSize, resultLayout,
                                  subgroupIndices, threadIndices);
+    ArrayRef<int64_t> subgroupStrides = resultLayout.getSubgroupStrides();
+    ArrayRef<int64_t> subgroupLengths = resultLayout.getSubgroupTile();
+    ArrayRef<int64_t> threadStrides = resultLayout.getThreadStrides();
+    ArrayRef<int64_t> threadLengths = resultLayout.getThreadTile();
     assert(subgroupIndices.size() == 1);
     assert(threadIndices.size() == 1);
-    ArrayRef<int64_t> subgroupStrides = resultLayout.getSubgroupStrides();
-    ArrayRef<int64_t> threadStrides = resultLayout.getThreadStrides();
+    assert(subgroupLengths.size() == 1);
+    assert(threadLengths.size() == 1);
     assert(subgroupStrides.size() == 1);
     assert(threadStrides.size() == 1);
     auto distributedShape = signature[result].getDistributedShape();
 
-    vector::StepOp clonedStepOp = cast<vector::StepOp>(rewriter.clone(*stepOp));
-    VectorValue packedStep = getPackedVector(rewriter, resultLayout, clonedStepOp);
-    auto subgroupStep = rewriter.create<vector::ExtractOp>(loc, packedStep, subgroupIndices[0]);
-    int64_t subgroupRank = cast<VectorType>(subgroupStep.getType()).getRank();
-    // [batch, outer, thread, element] --> [thread, batch, outer, element]
-    auto makeThreadOuterPerm = llvm::to_vector(llvm::seq<int64_t>(subgroupRank));
-    makeThreadOuterPerm[0] = 2;
-    makeThreadOuterPerm[2] = 0;
-    auto transposed = rewriter.create<vector::TransposeOp>(loc, subgroupStep, makeThreadOuterPerm);
-    auto threadStep = rewriter.create<vector::ExtractOp>(loc, transposed, threadIndices[0]);
+    int64_t distributedElements = ShapedType::getNumElements(distributedShape);
 
-    VectorType distributedType = VectorType::get(distributedShape, result.getType().getElementType());
-    auto finalDistributedVector = rewriter.create<vector::ShapeCastOp>(loc, distributedType, threadStep);
-    replaceOpWithDistributedValues(rewriter, stepOp, {finalDistributedVector});
+    VectorValue slicedStepOp = generateSlicedStep(rewriter, 
+                                                  loc, 
+                                                  {subgroupStrides[0], threadStrides[0]}, 
+                                                  {subgroupLengths[0], threadLengths[0]},
+                                                  {subgroupIndices[0], threadIndices[0]},
+                                                  distributedElements);
+    VectorType finalSlicedStepOpType = VectorType::get({distributedShape}, result.getType().getElementType());                                              
+    auto finalSlicedStepOp = rewriter.create<vector::ShapeCastOp>(loc, finalSlicedStepOpType, slicedStepOp);
+    replaceOpWithDistributedValues(rewriter, stepOp, {finalSlicedStepOp});
     return success();
   }
 
