@@ -734,8 +734,9 @@ struct DistributeDenseConstant final
     // Create an alloc for the constant.
     VectorType vectorTy = vector.getType();
     Location loc = constantOp.getLoc();
+    auto addressSpaceAttr = gpu::AddressSpaceAttr::get(rewriter.getContext(), gpu::GPUDialect::getPrivateAddressSpace());
     auto memrefType =
-        MemRefType::get(vectorTy.getShape(), vectorTy.getElementType());
+        MemRefType::get(vectorTy.getShape(), vectorTy.getElementType(), MemRefLayoutAttrInterface{}, addressSpaceAttr);
 
     // Allocate a buffer for this vector.
     auto alloc = rewriter.create<memref::AllocOp>(loc, memrefType);
@@ -816,6 +817,58 @@ struct DistributeDenseConstant final
   int64_t subgroupSize;
 };
 
+
+
+struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
+  using OpDistributionPattern::OpDistributionPattern;
+
+  DistributeStep(MLIRContext *context, Value threadId,
+                          int64_t subgroupSize)
+      : OpDistributionPattern(context), threadId(threadId),
+        subgroupSize(subgroupSize) {}
+  LogicalResult matchAndRewrite(vector::StepOp stepOp,
+                                DistributionSignature &signature,
+                                PatternRewriter &rewriter) const override {
+    Location loc = stepOp.getLoc();
+    VectorValue result = stepOp.getResult();
+    NestedLayoutAttr resultLayout =
+        dyn_cast<NestedLayoutAttr>(signature[result]);
+    if (!resultLayout) {
+      return rewriter.notifyMatchFailure(
+          stepOp, "missing nested layout for step op result");
+    }
+    SmallVector<Value> subgroupIndices, threadIndices;
+    populateWarpAndThreadIndices(rewriter, threadId, subgroupSize, resultLayout,
+                                 subgroupIndices, threadIndices);
+    assert(subgroupIndices.size() == 1);
+    assert(threadIndices.size() == 1);
+    ArrayRef<int64_t> subgroupStrides = resultLayout.getSubgroupStrides();
+    ArrayRef<int64_t> threadStrides = resultLayout.getThreadStrides();
+    assert(subgroupStrides.size() == 1);
+    assert(threadStrides.size() == 1);
+    auto distributedShape = signature[result].getDistributedShape();
+
+    vector::StepOp clonedStepOp = cast<vector::StepOp>(rewriter.clone(*stepOp));
+    VectorValue packedStep = getPackedVector(rewriter, resultLayout, clonedStepOp);
+    auto subgroupStep = rewriter.create<vector::ExtractOp>(loc, packedStep, subgroupIndices[0]);
+    int64_t subgroupRank = cast<VectorType>(subgroupStep.getType()).getRank();
+    // [batch, outer, thread, element] --> [thread, batch, outer, element]
+    auto makeThreadOuterPerm = llvm::to_vector(llvm::seq<int64_t>(subgroupRank));
+    makeThreadOuterPerm[0] = 2;
+    makeThreadOuterPerm[2] = 0;
+    auto transposed = rewriter.create<vector::TransposeOp>(loc, subgroupStep, makeThreadOuterPerm);
+    auto threadStep = rewriter.create<vector::ExtractOp>(loc, transposed, threadIndices[0]);
+
+    VectorType distributedType = VectorType::get(distributedShape, result.getType().getElementType());
+    auto finalDistributedVector = rewriter.create<vector::ShapeCastOp>(loc, distributedType, threadStep);
+    replaceOpWithDistributedValues(rewriter, stepOp, {finalDistributedVector});
+    return success();
+  }
+
+  Value threadId;
+  int64_t subgroupSize;
+};
+
 } // namespace
 
 void populateGPUDistributeNestedLayoutAttrPatterns(RewritePatternSet &patterns,
@@ -829,6 +882,7 @@ void populateGPUDistributeNestedLayoutAttrPatterns(RewritePatternSet &patterns,
   patterns.add<DistributeMultiReduction>(patterns.getContext(), subgroupSize,
                                          maxBitsPerShuffle);
   patterns.add<DistributeBatchOuterToLayoutConversions>(patterns.getContext());
+  patterns.add<DistributeStep>(patterns.getContext(), threadId, subgroupSize);
 }
 
 }; // namespace mlir::iree_compiler
