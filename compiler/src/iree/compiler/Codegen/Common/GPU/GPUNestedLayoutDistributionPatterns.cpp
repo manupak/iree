@@ -818,29 +818,76 @@ struct DistributeDenseConstant final
 };
 
 
-
 struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
   using OpDistributionPattern::OpDistributionPattern;
 
-  VectorValue generateSlicedStep(OpBuilder& builder, Location loc, ArrayRef<int64_t> dimStrides, ArrayRef<int64_t> dimLens, ArrayRef<Value> dimIdxs, int64_t distributedLen) const {
-    SmallVector<APInt> offsets;
-    VectorType offsetType = VectorType::get({distributedLen}, builder.getIndexType());
-    offsets.reserve(distributedLen);
-    for(int64_t i=0; i<distributedLen; i++){
-      int64_t offset = 0;
-      for(auto[dimStride, dimLen] : zip(dimStrides, dimLens)){
-        if(dimStride != 0){
-          offset += (i % dimStride) + (i/dimStride)*(dimStride*dimLen); 
+  struct DimInfo{
+    std::optional<Value> dimIdx;
+    int64_t dimLen;
+    int64_t dimStride;
+  };
+
+  SmallVector<DimInfo> getRemainingDims(ArrayRef<DimInfo> distributedStrides, int64_t originalLen) const {
+    SmallVector<DimInfo> remainingDims;
+    int64_t currLen = originalLen;
+    for(const DimInfo& dInfo : distributedStrides){
+      if(dInfo.dimStride != 0){
+        int64_t dStride = dInfo.dimStride;
+        int64_t dLen = dInfo.dimLen;
+        int64_t higherStride = dLen * dStride;
+        if(higherStride < currLen){
+          remainingDims.push_back({std::nullopt, currLen / higherStride, higherStride});
         }
+        currLen = dStride;
+      }
+    }
+    remainingDims.push_back({std::nullopt, currLen, 1});
+    return remainingDims;
+  }
+
+  SmallVector<int64_t> getLens(ArrayRef<DimInfo> dimInfos) const {
+    SmallVector<int64_t> lens;
+    for(const DimInfo& dInfo : dimInfos){
+      lens.push_back(dInfo.dimLen);
+    }
+    return lens;
+  }
+
+  SmallVector<int64_t> getPackedStrides(ArrayRef<DimInfo> dims) const {
+    SmallVector<int64_t> lens = getLens(dims);
+    int64_t elementCount = ShapedType::getNumElements(lens);
+    SmallVector<int64_t> packedStrides;
+    int64_t currStride = elementCount;
+    for(int64_t len : lens){
+      currStride = currStride / len;
+      packedStrides.push_back(currStride);
+    }
+    return packedStrides;
+  }
+
+  VectorValue generateSlicedStep(OpBuilder& builder, Location loc, ArrayRef<DimInfo> distributedDims, int64_t distributedLen, int64_t originalLen) const {
+    SmallVector<DimInfo> remainingDims = getRemainingDims(distributedDims, originalLen);
+    SmallVector<int64_t> remainingPackedStrides = getPackedStrides(remainingDims);
+    llvm::reverse(remainingDims);
+    llvm::reverse(remainingPackedStrides);
+
+    SmallVector<APInt> offsets;
+    offsets.reserve(distributedLen);
+    for(size_t i=0; i<distributedLen; i++){
+      int64_t offset = 0;
+      for(const auto& [dimInfo, packedStride] : zip(remainingDims, remainingPackedStrides)){
+        offset += ((i / packedStride) % dimInfo.dimLen) * dimInfo.dimStride;
       }
       offsets.push_back(APInt(/*width=*/64, offset));
     }
+    VectorType offsetType = VectorType::get({distributedLen}, builder.getIndexType());
     auto constOffset = builder.create<arith::ConstantOp>(loc, DenseElementsAttr::get(offsetType, offsets));
     Value finalOffset = constOffset;
-    for(auto[dimStride, dimIdx] : zip(dimStrides, dimIdxs)){
-      if(dimStride != 0){
-        auto strideVal = builder.create<arith::ConstantIndexOp>(loc, dimStride);
-        auto dimIdxOffsetPerElem = builder.create<arith::MulIOp>(loc, strideVal, dimIdx);
+    for(const DimInfo& dimInfo : distributedDims){
+      assert(dimInfo.dimIdx.has_value());
+      if(dimInfo.dimStride != 0){
+        auto strideVal = builder.create<arith::ConstantIndexOp>(loc, dimInfo.dimStride);
+        auto dimIdxOffsetPerElem = builder.create<arith::MulIOp>(loc, strideVal, dimInfo.dimIdx.value());
         auto dimIdxOffset = builder.create<vector::BroadcastOp>(loc, offsetType, dimIdxOffsetPerElem);
         finalOffset = builder.create<arith::AddIOp>(loc, finalOffset, dimIdxOffset);
       }
@@ -879,13 +926,18 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     auto distributedShape = signature[result].getDistributedShape();
 
     int64_t distributedElements = ShapedType::getNumElements(distributedShape);
-
+    int64_t originalElements = result.getType().getNumElements();
+    SmallVector<DimInfo, 2> distributedDims {{subgroupIndices[0], subgroupLengths[0], subgroupStrides[0]}, 
+                                             {threadIndices[0], threadLengths[0], threadStrides[0]}};
+    sort(distributedDims,
+         [](const DimInfo& lhs, const DimInfo& rhs){
+          return lhs.dimStride > rhs.dimStride;
+         });
     VectorValue slicedStepOp = generateSlicedStep(rewriter, 
                                                   loc, 
-                                                  {subgroupStrides[0], threadStrides[0]}, 
-                                                  {subgroupLengths[0], threadLengths[0]},
-                                                  {subgroupIndices[0], threadIndices[0]},
-                                                  distributedElements);
+                                                  distributedDims,
+                                                  distributedElements,
+                                                  originalElements);
     VectorType finalSlicedStepOpType = VectorType::get({distributedShape}, result.getType().getElementType());                                              
     auto finalSlicedStepOp = rewriter.create<vector::ShapeCastOp>(loc, finalSlicedStepOpType, slicedStepOp);
     replaceOpWithDistributedValues(rewriter, stepOp, {finalSlicedStepOp});
