@@ -821,12 +821,26 @@ struct DistributeDenseConstant final
 struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
   using OpDistributionPattern::OpDistributionPattern;
 
+  // This is a helper aggregate
+  // to hold the information about
+  // a dimension. 
+  // For e.g. : 3x4x2 shape will
+  // have lengths = [3, 4, 2]
+  // and strides = [8, 2, 1]
   struct DimInfo{
     std::optional<Value> dimIdx;
     int64_t dimLen;
     int64_t dimStride;
   };
 
+  // This is a helper function to extract the remaining
+  // dimensions with their original strides once the
+  // distributed dimensions are extracted out
+  //         threads
+  //          V
+  // E.g. 3 x 4 x 2 
+  // This will return back remaining dimensions that
+  // have lengths = [3, 2] and strides = [8, 1]
   SmallVector<DimInfo> getRemainingDims(ArrayRef<DimInfo> distributedStrides, int64_t originalLen) const {
     SmallVector<DimInfo> remainingDims;
     int64_t currLen = originalLen;
@@ -845,6 +859,7 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     return remainingDims;
   }
 
+  // This is a helper to extract lengths of all dimensions
   SmallVector<int64_t> getLens(ArrayRef<DimInfo> dimInfos) const {
     SmallVector<int64_t> lens;
     for(const DimInfo& dInfo : dimInfos){
@@ -853,6 +868,11 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     return lens;
   }
 
+  // Once we are in the realm of remaining dimensions,
+  // the strides are not packed. This is a helper to
+  // obtain the packed strides of the remaining dimensions.
+  // (See above for an example of remaining dimensions under
+  //  getRemainingDims)
   SmallVector<int64_t> getPackedStrides(ArrayRef<DimInfo> dims) const {
     SmallVector<int64_t> lens = getLens(dims);
     int64_t elementCount = ShapedType::getNumElements(lens);
@@ -865,6 +885,8 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     return packedStrides;
   }
 
+  // This function emulates the slicing of otherwise large constant
+  // across threads and subgroups.
   VectorValue generateSlicedStep(OpBuilder& builder, Location loc, ArrayRef<DimInfo> distributedDims, int64_t distributedLen, int64_t originalLen) const {
     SmallVector<DimInfo> remainingDims = getRemainingDims(distributedDims, originalLen);
     SmallVector<int64_t> remainingPackedStrides = getPackedStrides(remainingDims);
@@ -873,6 +895,31 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
 
     SmallVector<APInt> offsets;
     offsets.reserve(distributedLen);
+    // As for a complex example what the following
+    // maths would achieve:
+    //    wave
+    //     |   threads
+    //	   V   V
+    // 2 x 3 x 4 x 2 = 0 1 2 .... 48
+    // say vector.step : vector<48xindex> is to be distributed.
+    // --------------------------------------------------------
+    // The the distribution should be as follows:
+    // wave0:
+    // t0: 0 1 24 25
+    // t1: 2 3 26 27
+    // t2: 4 5 28 29
+    // t4: 6 7 30 31
+    //
+    // wave1:
+    // t0: 8 9 32 33
+    // t1: 10 11 34 35
+    // t2: 12 13 36 37
+    // t4: 14 15 38 39
+    // ... etc
+    //
+    // So wave0 & t0 value this constant offset that we generate
+    // below initially. Then followed by thread and subgroup weighted
+    // addition that is weighted by their stride.
     for(size_t i=0; i<distributedLen; i++){
       int64_t offset = 0;
       for(const auto& [dimInfo, packedStride] : zip(remainingDims, remainingPackedStrides)){
@@ -917,6 +964,7 @@ struct DistributeStep final : OpDistributionPattern<vector::StepOp> {
     ArrayRef<int64_t> subgroupLengths = resultLayout.getSubgroupTile();
     ArrayRef<int64_t> threadStrides = resultLayout.getThreadStrides();
     ArrayRef<int64_t> threadLengths = resultLayout.getThreadTile();
+    // Step op by definition should be single dimensional.
     assert(subgroupIndices.size() == 1);
     assert(threadIndices.size() == 1);
     assert(subgroupLengths.size() == 1);
