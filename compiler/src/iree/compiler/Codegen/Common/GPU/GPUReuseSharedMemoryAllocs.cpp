@@ -86,12 +86,14 @@ static LogicalResult populateLivenessRanges(
 
   // Collect all shared memory allocations.
   SmallVector<memref::AllocOp> sharedMemAllocs;
-  for (auto alloc : rootBlock.getOps<memref::AllocOp>()) {
-    if (hasSharedMemoryAddressSpace(alloc.getType())) {
-      sharedMemAllocs.push_back(alloc);
+  rootBlock.walk([&](memref::AllocOp allocOp) {
+    if (hasSharedMemoryAddressSpace(allocOp.getType())) {
+      sharedMemAllocs.push_back(allocOp);
     }
-  }
+  });
+
   if (sharedMemAllocs.size() < 2) {
+    LLVM_DEBUG(llvm::dbgs() << "shared mem allocs are less than 2.\n");
     return failure();
   }
 
@@ -216,6 +218,7 @@ struct GPUReuseSharedMemoryAllocsPass final
     // If the funcOp does not meet the conditions for the analysis, do nothing.
     if (failed(populateLivenessRanges(funcOp, livenessMap, allocs,
                                       dominanceInfo))) {
+      LLVM_DEBUG(llvm::dbgs() << "populateLivenessRanges failed.\n");
       return;
     }
 
@@ -226,6 +229,7 @@ struct GPUReuseSharedMemoryAllocsPass final
 
     // Nothing to reuse if there is only a single alias group.
     if (aliasGroups.size() < 2) {
+      LLVM_DEBUG(llvm::dbgs() << "aliasGroups is less than 2.\n");
       return;
     }
 

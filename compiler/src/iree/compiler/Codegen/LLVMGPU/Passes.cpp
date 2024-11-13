@@ -823,6 +823,7 @@ static void addVectorBufferizePasses(OpPassManager &funcPassManager) {
   BufferizationOptions::AllocationFn allocationFn = gpuAllocationFn;
   BufferizationOptions::MemCpyFn memcpyFn = gpuCopyFn;
   addIREEComprehensiveBufferizePasses(funcPassManager, allocationFn, memcpyFn);
+  funcPassManager.addPass(createGPUReuseSharedMemoryAllocsPass());
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCSEPass());
 }
