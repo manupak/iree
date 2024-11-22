@@ -25,7 +25,8 @@ MlirAttribute
 ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, bool *prefetchSharedMemory,
                               bool *noReduceSharedMemoryBankConflicts,
                               bool *useIgemmConvolution,
-                              MlirAttribute *reorderWorkgroupsStrategy) {
+                              MlirAttribute *reorderWorkgroupsStrategy,
+                              bool *enableSharedMemoryReuse) {
   mlir::MLIRContext *ctx = unwrap(mlirCtx);
   mlir::Builder b(ctx);
   auto prefetchSharedMemoryAttr = mlir::BoolAttr();
@@ -41,6 +42,10 @@ ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, bool *prefetchSharedMemory,
   if (useIgemmConvolution) {
     useIgemmConvolutionAttr = b.getBoolAttr(*useIgemmConvolution);
   }
+  auto enableSharedMemoryReuseAttr = mlir::BoolAttr();
+  if (enableSharedMemoryReuse) {
+    enableSharedMemoryReuseAttr = b.getBoolAttr(*enableSharedMemoryReuse);
+  }
   auto strategyAttr =
       mlir::iree_compiler::IREE::GPU::ReorderWorkgroupsStrategyAttr();
   if (reorderWorkgroupsStrategy) {
@@ -50,7 +55,7 @@ ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, bool *prefetchSharedMemory,
   }
   return wrap(mlir::iree_compiler::IREE::GPU::GPUPipelineOptionsAttr::get(
       ctx, prefetchSharedMemoryAttr, noReduceSharedMemoryBankConflictsAttr,
-      useIgemmConvolutionAttr, strategyAttr));
+      useIgemmConvolutionAttr, strategyAttr, enableSharedMemoryReuseAttr));
 }
 
 MlirAttribute

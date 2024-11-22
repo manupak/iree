@@ -55,6 +55,7 @@ struct GPUPipelineOptions {
   bool useIgemmConvolution = false;
   bool enableUkernels = false;
   std::optional<ReorderWorkgroupsStrategy> reorderStrategy;
+  bool enableReuseSharedMemory = false;
 };
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &os,

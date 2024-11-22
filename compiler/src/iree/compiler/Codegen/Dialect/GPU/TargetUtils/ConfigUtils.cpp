@@ -741,6 +741,10 @@ getPipelineOptions(FunctionOpInterface funcOp,
     if (reorderWorkgroupsStrategy) {
       pipelineOptions.reorderStrategy = reorderWorkgroupsStrategy.getValue();
     }
+    BoolAttr enableReuseSharedMemory = pipelineOptionsAttr.getEnableReuseSharedMemory();
+    if (enableReuseSharedMemory) {
+      pipelineOptions.enableReuseSharedMemory = enableReuseSharedMemory.getValue();
+    }
   }
 
   pipelineOptions.enableUkernels = targetAttr && hasUkernel(targetAttr);
