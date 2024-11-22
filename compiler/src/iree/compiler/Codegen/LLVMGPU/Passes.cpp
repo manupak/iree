@@ -914,6 +914,8 @@ void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
     options.paddingBits = 64;
     funcPassManager.addPass(createGPUReduceBankConflictsPass(options));
   }
+  funcPassManager.addPass(createHoistStaticallyBoundAllocationsPass());
+  funcPassManager.addPass(createGPUReuseSharedMemoryAllocsPass());
 
   if (options.prefetchSharedMemory) {
     funcPassManager.addPass(createLLVMGPUPrefetchSharedMemoryPass());
