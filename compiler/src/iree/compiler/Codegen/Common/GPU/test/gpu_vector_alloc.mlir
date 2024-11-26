@@ -1,5 +1,7 @@
 // RUN: iree-opt %s --split-input-file --pass-pipeline="builtin.module(func.func(iree-codegen-gpu-vector-alloc))" | FileCheck %s
 
+#translation = #iree_codegen.translation_info<pipeline = LLVMGPUVectorDistribute workgroup_size = [256, 1, 1] subgroup_size = 64, {gpu_pipeline_options = #iree_gpu.pipeline_options<prefetch_shared_memory = true, no_reduce_shared_memory_bank_conflicts = false>}>
+
 #layout = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
   batch_tile = [1, 1],
@@ -8,10 +10,10 @@
   element_tile = [4, 1],
 
   subgroup_strides = [1, 1],
-  thread_strides   = [0, 0]
+  thread_strides   = [1, 4]
 >
 
-func.func @test(%vector: vector<16x16xf16>) -> vector<16x16xf16> {
+func.func @test(%vector: vector<16x16xf16>) -> vector<16x16xf16> attributes {translation_info = #translation} {
   %out = iree_vector_ext.to_layout %vector to layout(#layout) {shared_memory_conversion} : vector<16x16xf16>
   return %out : vector<16x16xf16>
 }

@@ -916,11 +916,11 @@ void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCSEPass());
 
-  if (options.enableReduceSharedMemoryBankConflicts) {
-    GPUReduceBankConflictsPassOptions options = {};
-    options.paddingBits = 64;
-    funcPassManager.addPass(createGPUReduceBankConflictsPass(options));
-  }
+  // if (options.enableReduceSharedMemoryBankConflicts) {
+  //   GPUReduceBankConflictsPassOptions options = {};
+  //   options.paddingBits = 64;
+  //   funcPassManager.addPass(createGPUReduceBankConflictsPass(options));
+  // }
   if (options.prefetchSharedMemory) {
     funcPassManager.addPass(createLLVMGPUPrefetchSharedMemoryPass());
   }

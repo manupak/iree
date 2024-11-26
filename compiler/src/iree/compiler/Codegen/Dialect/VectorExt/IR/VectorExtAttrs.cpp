@@ -104,11 +104,13 @@ SmallVector<int64_t> NestedLayoutAttr::getUndistributedPackedShape() const {
   SmallVector<int64_t> shape;
   int64_t rank = getRank();
   shape.reserve(rank * 5);
-  shape.append(getSubgroupTile().begin(), getSubgroupTile().end());
-  shape.append(getBatchTile().begin(), getBatchTile().end());
-  shape.append(getOuterTile().begin(), getOuterTile().end());
-  shape.append(getThreadTile().begin(), getThreadTile().end());
-  shape.append(getElementTile().begin(), getElementTile().end());
+  for (auto[sg, b, o, t, e] : llvm::zip(getSubgroupTile(), getBatchTile(), getOuterTile(), getThreadTile(), getElementTile())){
+    shape.push_back(sg);
+    shape.push_back(b);
+    shape.push_back(o);
+    shape.push_back(t);
+    shape.push_back(e);
+  }
   return shape;
 }
 
