@@ -421,6 +421,113 @@ static void enforceSameLayoutForOperands(
 ///        PROPAGATION TRANSFER FUNCTIONS
 /// ==========================================================================
 
+static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorExt::NestedLayoutAttr lessRankLayout, 
+                                                                   ArrayRef<int64_t> lessRankShape,
+                                                                   ArrayRef<int64_t> moreRankShape){
+  int64_t moreRank = moreRankShape.size();
+  int64_t lessRank = lessRankShape.size();
+  SmallVector<int64_t> subgroupTile(moreRank, 1);
+  SmallVector<int64_t> batchTile(moreRank, 1);
+  SmallVector<int64_t> outerTile(moreRank, 1);
+  SmallVector<int64_t> threadTile(moreRank, 1);
+  SmallVector<int64_t> elementTile(moreRank, 1);
+  SmallVector<int64_t> subgroupStrides(moreRank, 0);
+  SmallVector<int64_t> threadStrides(moreRank, 0);
+
+  llvm::errs() << "lessRankLayout=" << lessRankLayout << "\n";
+
+    for(int64_t idim : llvm::seq<int64_t>(0, lessRank)){
+      int64_t idimOffset = 5*idim;
+      subgroupStrides[idimOffset] = lessRankLayout.getSubgroupStrides()[idim];
+      threadStrides[idimOffset + 3] = lessRankLayout.getThreadStrides()[idim];
+
+      //     64 --> 2 x 2 x 1 x 16 x 1
+      //sg:  1  --> 1   1   1   1    1
+      //b:   2  --> 2   1   1   1    1
+      //o:   1  --> 1   1   1   1    1
+      //t:   32 --> 1   2   1   16   1
+      //e:   1  --> 1   1   1   1    1
+
+      SmallVector<int64_t> lessRankTiles {
+        lessRankLayout.getSubgroupTile()[idim],
+        lessRankLayout.getBatchTile()[idim],
+        lessRankLayout.getOuterTile()[idim],
+        lessRankLayout.getThreadTile()[idim],
+        lessRankLayout.getElementTile()[idim]
+      };
+
+      SmallVector<int64_t> moreRankSlice = llvm::to_vector(moreRankShape.slice(idimOffset, 5));
+      // llvm::errs() << "outputSlice="; llvm::interleaveComma(outputSlice, llvm::errs()); llvm::errs() << "\n";
+
+      SmallVector<SmallVector<int64_t>*> moreRankTiles{
+        &subgroupTile,
+        &batchTile,
+        &outerTile,
+        &threadTile,
+        &elementTile
+      };
+
+      for(auto [tileTypeIdx, tileType] : llvm::enumerate(moreRankTiles)){
+        int64_t lessRankTileSize = lessRankTiles[tileTypeIdx];
+        for(auto [idx, moreRankSliceLen] : llvm::enumerate(moreRankSlice)){
+          // llvm::errs() << "lessRankTileSize=" << lessRankTileSize;
+          if(lessRankTileSize >= moreRankSliceLen){
+            (*tileType)[idimOffset + idx] = moreRankSliceLen;
+            // llvm::errs() << "|assigning:" << lessRankSliceLen << ",remaining:" << lessRankTileSize / lessRankSliceLen << "\n";
+            assert(lessRankTileSize % moreRankSliceLen == 0);
+            lessRankTileSize = lessRankTileSize / moreRankSliceLen;
+            moreRankSlice[idx] = 1;
+          }
+          else{
+            (*tileType)[idimOffset + idx] = lessRankTileSize;
+            // llvm::errs() << "|assigning:" << lessRankTileSize << ",remaining:1\n";
+            assert(moreRankSliceLen % lessRankTileSize == 0);
+            moreRankSlice[idx] = moreRankSliceLen / lessRankTileSize;
+            lessRankTileSize = 1;
+          }
+        }
+      }
+    }
+
+  auto moreRankLayout = IREE::VectorExt::NestedLayoutAttr::get(lessRankLayout.getContext(),
+                                                          subgroupTile,
+                                                          batchTile,
+                                                          outerTile,
+                                                          threadTile,
+                                                          elementTile,
+                                                          subgroupStrides,
+                                                          threadStrides);
+  return moreRankLayout;
+}
+
+static void propagateLayoutToShapeCastOp(
+    vector::ShapeCastOp shapeCastOp, ArrayRef<const DistributionLayout *> operandLattices,
+    ArrayRef<DistributionLayout *> resultLattices,
+    std::function<void(DistributionLayout *, ChangeResult)> update){
+  
+  //We only support simd_rank --> 5 x simd_rank shape casts
+  //or 5 x simd_rank --> simd_rank shape casts.
+  int64_t inputRank = cast<VectorType>(shapeCastOp.getOperand().getType()).getRank();
+  int64_t outputRank = cast<VectorType>(shapeCastOp.getResult().getType()).getRank();
+  ArrayRef<int64_t> outputShape = cast<VectorType>(shapeCastOp.getResult().getType()).getShape();
+  ArrayRef<int64_t> inputShape = cast<VectorType>(shapeCastOp.getOperand().getType()).getShape();
+  assert(inputRank == outputRank*5 || outputRank == inputRank*5);
+  bool isFwd = (outputRank == inputRank*5);
+
+  if(!isFwd) return;
+  llvm::errs() << "prop::shapeCast=" << shapeCastOp << "\n";
+
+  IREE::VectorExt::NestedLayoutAttr lessRankLayout = cast<IREE::VectorExt::NestedLayoutAttr>(operandLattices[0]->getLayout());
+  ArrayRef<int64_t> lessRankShape = inputShape;
+  ArrayRef<int64_t> moreRankShape = outputShape;
+
+  IREE::VectorExt::NestedLayoutAttr moreRankLayout = getMoreRankLayoutforCasts(lessRankLayout, lessRankShape, moreRankShape);
+
+  DistributionLayout *result = resultLattices[0];
+  ChangeResult changed = result->resolve(moreRankLayout, /*force=*/true);
+  update(result, changed);
+}
+
 static void propagateLayoutToLayoutOp(
     ToLayoutOp toLayout, ArrayRef<const DistributionLayout *> operandLattices,
     ArrayRef<DistributionLayout *> resultLattices,
@@ -580,6 +687,12 @@ void propagationTransferFunction(
     return;
   }
 
+  if (auto shapeCast = dyn_cast<vector::ShapeCastOp>(op)) {
+    propagateLayoutToShapeCastOp(shapeCast, operandLattices, resultLattices,
+                                 update);
+    return;
+  }
+
   // Propagate layout to elementwise operations.
   if (OpTrait::hasElementwiseMappableTraits(op)) {
     propagateLayoutToElementwiseOp(op, operandLattices, resultLattices, update);
@@ -615,6 +728,39 @@ void propagationTransferFunction(
 /// ==========================================================================
 ///        ENFORCEMENT TRANSFER FUNCTIONS
 /// ==========================================================================
+
+static void enforceLayoutToShapeCastOp(
+    vector::ShapeCastOp shapeCastOp, ArrayRef<DistributionLayout *> operandLattices,
+    ArrayRef<const DistributionLayout *> resultLattices,
+    std::function<void(DistributionLayout *, ChangeResult)> update) {
+
+  //We only support simd_rank --> 5 x simd_rank shape casts
+  //or 5 x simd_rank --> simd_rank shape casts.
+  int64_t inputRank = cast<VectorType>(shapeCastOp.getOperand().getType()).getRank();
+  int64_t outputRank = cast<VectorType>(shapeCastOp.getResult().getType()).getRank();
+  ArrayRef<int64_t> outputShape = cast<VectorType>(shapeCastOp.getResult().getType()).getShape();
+  ArrayRef<int64_t> inputShape = cast<VectorType>(shapeCastOp.getOperand().getType()).getShape();
+  assert(inputRank == outputRank*5 || outputRank == inputRank*5);
+  bool isFwd = (outputRank == inputRank*5);
+  if(isFwd) return;
+
+  const DistributionLayout *result = resultLattices[0];
+  if(!result->hasLayout()){
+    return;
+  }
+  llvm::errs() << "enforce::shapeCast=" << shapeCastOp << "\n";
+
+  IREE::VectorExt::NestedLayoutAttr lessRankLayout = cast<IREE::VectorExt::NestedLayoutAttr>(result->getLayout());
+  ArrayRef<int64_t> lessRankShape = outputShape;
+  ArrayRef<int64_t> moreRankShape = inputShape;
+
+  IREE::VectorExt::NestedLayoutAttr moreRankLayout = getMoreRankLayoutforCasts(lessRankLayout, lessRankShape, moreRankShape);
+
+  DistributionLayout *input = operandLattices[0];
+  ChangeResult changed = input->resolve(moreRankLayout, /*force=*/true);
+  update(input, changed);
+  llvm::errs() << "enforce::shapeCast done.\n";
+}
 
 static void enforceLayoutToLayoutOp(
     ToLayoutOp toLayout, ArrayRef<DistributionLayout *> operandLattices,
@@ -807,6 +953,10 @@ void enforcementTransferFunction(
 
   if (auto toLayout = dyn_cast<ToLayoutOp>(op)) {
     enforceLayoutToLayoutOp(toLayout, operandLattices, resultLattices, update);
+  }
+
+  if (auto shapeCast = dyn_cast<vector::ShapeCastOp>(op)) {
+    enforceLayoutToShapeCastOp(shapeCast, operandLattices, resultLattices, update);
   }
 
   // Propagate layout to elementwise operations.
