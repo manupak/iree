@@ -313,6 +313,23 @@ struct DistributeGather final : OpDistributionPattern<vector::GatherOp> {
   }
 };
 
+struct DistributeShapeCast final : OpDistributionPattern<vector::ShapeCastOp> {
+  using OpDistributionPattern::OpDistributionPattern;
+  LogicalResult matchAndRewrite(vector::ShapeCastOp shapeCastOp,
+                              DistributionSignature &signature,
+                              PatternRewriter &rewriter) const override {
+
+    VectorValue operand = cast<VectorValue>(shapeCastOp.getOperand());
+    VectorValue distributedOperand = DistributionPattern::getDistributed(rewriter, operand, signature[operand]);
+    VectorValue result = cast<VectorValue>(shapeCastOp.getResult());
+    VectorValue distributedResult = DistributionPattern::getDistributed(rewriter, result, signature[result]);
+
+    VectorValue distributed = rewriter.create<vector::ShapeCastOp>(shapeCastOp.getLoc(), distributedResult.getType(), distributedOperand);
+    replaceOpWithDistributedValues(rewriter, shapeCastOp, distributed);
+    return success();
+  }
+};
+
 } // namespace
 
 void populateGPUDistributionPatterns(RewritePatternSet &patterns) {
@@ -320,6 +337,7 @@ void populateGPUDistributionPatterns(RewritePatternSet &patterns) {
   // Elementwise patterns.
   patterns.add<DistributeElementwise>(patterns.getContext());
   patterns.add<DistributeTrivialLayoutConversions>(patterns.getContext());
+  patterns.add<DistributeShapeCast>(patterns.getContext());
   // Gather patterns.
   patterns.add<DistributeGather>(patterns.getContext());
 }
