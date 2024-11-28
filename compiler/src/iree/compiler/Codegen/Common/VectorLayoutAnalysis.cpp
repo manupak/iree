@@ -434,8 +434,6 @@ static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorE
   SmallVector<int64_t> threadTile(moreRank, 1);
   SmallVector<int64_t> elementTile(moreRank, 1);
 
-  llvm::errs() << "lessRankLayout=" << lessRankLayout << "\n";
-
     for(int64_t idim : llvm::seq<int64_t>(0, lessRank)){
       int64_t idimOffset = rankRatio*idim;
 
@@ -455,7 +453,6 @@ static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorE
       };
 
       SmallVector<int64_t> moreRankSlice = llvm::to_vector(moreRankShape.slice(idimOffset, rankRatio));
-      // llvm::errs() << "outputSlice="; llvm::interleaveComma(outputSlice, llvm::errs()); llvm::errs() << "\n";
 
       SmallVector<SmallVector<int64_t>*> moreRankTiles{
         &subgroupTile,
@@ -468,17 +465,14 @@ static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorE
       for(auto [tileTypeIdx, tileType] : llvm::enumerate(moreRankTiles)){
         int64_t lessRankTileSize = lessRankTiles[tileTypeIdx];
         for(auto [idx, moreRankSliceLen] : llvm::enumerate(moreRankSlice)){
-          // llvm::errs() << "lessRankTileSize=" << lessRankTileSize;
           if(lessRankTileSize >= moreRankSliceLen){
             (*tileType)[idimOffset + idx] = moreRankSliceLen;
-            // llvm::errs() << "|assigning:" << lessRankSliceLen << ",remaining:" << lessRankTileSize / lessRankSliceLen << "\n";
             assert(lessRankTileSize % moreRankSliceLen == 0);
             lessRankTileSize = lessRankTileSize / moreRankSliceLen;
             moreRankSlice[idx] = 1;
           }
           else{
             (*tileType)[idimOffset + idx] = lessRankTileSize;
-            // llvm::errs() << "|assigning:" << lessRankTileSize << ",remaining:1\n";
             assert(moreRankSliceLen % lessRankTileSize == 0);
             moreRankSlice[idx] = moreRankSliceLen / lessRankTileSize;
             lessRankTileSize = 1;
@@ -537,7 +531,6 @@ static void propagateLayoutToShapeCastOp(
 
   // TODO: implement more to less rank propogation.
   if(!isFwd) return;
-  llvm::errs() << "prop::shapeCast=" << shapeCastOp << "\n";
 
   if(!operandLattices[0]->hasLayout()){
     return;
@@ -775,7 +768,6 @@ static void enforceLayoutToShapeCastOp(
   if(!result->hasLayout()){
     return;
   }
-  llvm::errs() << "enforce::shapeCast=" << shapeCastOp << "\n";
 
   IREE::VectorExt::NestedLayoutAttr lessRankLayout = cast<IREE::VectorExt::NestedLayoutAttr>(result->getLayout());
   ArrayRef<int64_t> lessRankShape = outputShape;
@@ -786,7 +778,6 @@ static void enforceLayoutToShapeCastOp(
   DistributionLayout *input = operandLattices[0];
   ChangeResult changed = input->resolve(moreRankLayout, /*force=*/true);
   update(input, changed);
-  llvm::errs() << "enforce::shapeCast done.\n";
 }
 
 static void enforceLayoutToLayoutOp(
