@@ -714,3 +714,63 @@ builtin.module attributes { transform.with_named_sequence } {
     transform.yield
   }
 }
+
+// -----
+
+#layout = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile = [4, 1],
+  outer_tile = [1, 1],
+  thread_tile = [16, 16],
+  element_tile = [1, 8],
+
+  subgroup_strides = [0, 0],
+  thread_strides = [16, 1]
+>
+
+// Propagate through vector.shape_cast
+builtin.module attributes { transform.with_named_sequence } {
+  func.func @shapecast_prop_lesslayout_to_more(%in: vector<64x128xf16>) -> vector<1x2x1x32x1x1x8x1x2x8xf16> {
+    %in_1 = iree_vector_ext.to_layout %in to layout(#layout) : vector<64x128xf16>
+    %cast = vector.shape_cast %in_1 : vector<64x128xf16> to vector<1x2x1x32x1x1x8x1x2x8xf16>
+    // expected-remark @above {{batch_tile = [1, 2, 1, 2, 1, 1, 1, 1, 1, 1], outer_tile = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1], thread_tile = [1, 1, 1, 16, 1, 1, 8, 1, 2, 1], element_tile = [1, 1, 1, 1, 1, 1, 1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], thread_strides = [0, 0, 0, 16, 0, 0, 2, 0, 1, 0]}}
+    return %cast : vector<1x2x1x32x1x1x8x1x2x8xf16>
+  }
+
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_vector_layout_analysis %top_level_func : !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+#layout = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile = [4, 1],
+  outer_tile = [1, 1],
+  thread_tile = [16, 16],
+  element_tile = [1, 8],
+
+  subgroup_strides = [0, 0],
+  thread_strides = [16, 1]
+>
+
+// Propagate through vector.shape_cast
+builtin.module attributes { transform.with_named_sequence } {
+  func.func @shapecast_enforce_lesslayout_to_more(%in0: vector<1x2x1x32x1x1x8x1x2x8xf16>, %in1: vector<1x2x1x32x1x1x8x1x2x8xf16>) -> vector<64x128xf16> {
+    %add = arith.addf %in0, %in1 : vector<1x2x1x32x1x1x8x1x2x8xf16>
+    // expected-remark @above {{batch_tile = [1, 2, 1, 2, 1, 1, 1, 1, 1, 1], outer_tile = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1], thread_tile = [1, 1, 1, 16, 1, 1, 8, 1, 2, 1], element_tile = [1, 1, 1, 1, 1, 1, 1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], thread_strides = [0, 0, 0, 16, 0, 0, 2, 0, 1, 0]}}
+    %cast = vector.shape_cast %add : vector<1x2x1x32x1x1x8x1x2x8xf16> to vector<64x128xf16>
+    // expected-remark @above {{batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 16], element_tile = [1, 8], subgroup_strides = [0, 0], thread_strides = [16, 1]}}
+    %cast_1 = iree_vector_ext.to_layout %cast to layout(#layout) : vector<64x128xf16>
+    return %cast_1 : vector<64x128xf16>
+  }
+
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_vector_layout_analysis %top_level_func : !transform.any_op
+    transform.yield
+  }
+}
