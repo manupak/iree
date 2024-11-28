@@ -431,15 +431,11 @@ static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorE
   SmallVector<int64_t> outerTile(moreRank, 1);
   SmallVector<int64_t> threadTile(moreRank, 1);
   SmallVector<int64_t> elementTile(moreRank, 1);
-  SmallVector<int64_t> subgroupStrides(moreRank, 0);
-  SmallVector<int64_t> threadStrides(moreRank, 0);
 
   llvm::errs() << "lessRankLayout=" << lessRankLayout << "\n";
 
     for(int64_t idim : llvm::seq<int64_t>(0, lessRank)){
       int64_t idimOffset = 5*idim;
-      subgroupStrides[idimOffset] = lessRankLayout.getSubgroupStrides()[idim];
-      threadStrides[idimOffset + 3] = lessRankLayout.getThreadStrides()[idim];
 
       //     64 --> 2 x 2 x 1 x 16 x 1
       //sg:  1  --> 1   1   1   1    1
@@ -486,6 +482,32 @@ static IREE::VectorExt::NestedLayoutAttr getMoreRankLayoutforCasts(IREE::VectorE
             lessRankTileSize = 1;
           }
         }
+      }
+    }
+
+    //Fix strides
+    SmallVector<int64_t> subgroupStrides(moreRank, 0);
+    SmallVector<int64_t> threadStrides(moreRank, 0);
+    for (auto lessDim : llvm::reverse(llvm::seq<int64_t>(0, lessRank))){
+      int64_t lessRankSubGroupStride = lessRankLayout.getSubgroupStrides()[lessDim];
+      if(lessRankSubGroupStride == 0) continue;
+      int64_t lessdimOffset = 5*lessDim;
+      ArrayRef<int64_t> subGroupTileSlice = ArrayRef<int64_t>(subgroupTile).slice(lessdimOffset, 5);
+      int64_t sliceLastIdx = subGroupTileSlice.size() - 1;
+      for(auto subGroupTileSize : llvm::reverse(subGroupTileSlice)){
+        subgroupStrides[lessdimOffset + sliceLastIdx--] = lessRankSubGroupStride;
+        lessRankSubGroupStride = lessRankSubGroupStride * subGroupTileSize;
+      }
+    }
+    for (auto lessDim : llvm::reverse(llvm::seq<int64_t>(0, lessRank))){
+      int64_t lessRankThreadStride = lessRankLayout.getThreadStrides()[lessDim];
+      if(lessRankThreadStride == 0) continue;
+      int64_t lessdimOffset = 5*lessDim;
+      ArrayRef<int64_t> threadTileSlice = ArrayRef<int64_t>(threadTile).slice(lessdimOffset, 5);
+      int64_t sliceLastIdx = threadTileSlice.size() - 1;
+      for(auto threadTileSize : llvm::reverse(threadTileSlice)){
+        threadStrides[lessdimOffset + sliceLastIdx--] = lessRankThreadStride;
+        lessRankThreadStride = lessRankThreadStride * threadTileSize;
       }
     }
 
