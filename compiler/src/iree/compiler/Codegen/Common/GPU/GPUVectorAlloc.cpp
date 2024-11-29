@@ -143,12 +143,12 @@ static FailureOr<Value> allocateTensorForVector(OpBuilder &b, Location loc,
   });
   SmallVector<int64_t> packedShape = vectorLayout.getUndistributedPackedShape();
   SmallVector<int64_t> threadContigousShape = packedShape;
-  int64_t threadTileOffset = 3 * vectorLayout.getRank();
+  int64_t threadTileOffset = 3;
   SmallVector<int64_t> threadTilePerm = llvm::to_vector(llvm::seq<int64_t>(0, vectorLayout.getRank() * 5));
   // SmallVector<int64_t> inverseThreadTilePerm = llvm::to_vector(llvm::seq<int64_t>(0, vectorLayout.getRank() * 5));
   for(auto[idx, strideOrder] : llvm::enumerate(threadStrides)){
-    threadContigousShape[threadTileOffset + idx] = packedShape[threadTileOffset + strideOrder.first];
-    threadTilePerm[threadTileOffset + idx] = threadTileOffset + strideOrder.first;
+    threadContigousShape[threadTileOffset + idx*5] = packedShape[threadTileOffset + strideOrder.first*5];
+    threadTilePerm[threadTileOffset + idx*5] = threadTileOffset + strideOrder.first*5;
     // inverseThreadTilePerm[threadTileOffset + strideOrder.first] = threadTileOffset + idx;
   }
   AffineMap transposeMap = AffineMap::getPermutationMap(threadTilePerm, b.getContext());
@@ -160,14 +160,13 @@ static FailureOr<Value> allocateTensorForVector(OpBuilder &b, Location loc,
       MemRefType::get(threadContigousShape, vectorType.getElementType(), AffineMap{}, sharedMemoryAddrSpace);
   auto allocOp = b.create<memref::AllocOp>(loc, packedWriteType);
   auto transposedAllocOp = b.create<memref::TransposeOp>(loc, allocOp, AffineMapAttr::get(transposeMap));
-  SmallVector<int64_t> deinterleavingPerm = getDeInterleavingPerm(vectorType.getRank());
-
+  // SmallVector<int64_t> deinterleavingPerm = getDeInterleavingPerm(vectorType.getRank());
   // llvm::errs() << "deinterleavingPerm="; llvm::interleaveComma(deinterleavingPerm, llvm::errs()); llvm::errs() << "\n";
-  AffineMap deinterleavingMap = AffineMap::getPermutationMap(deinterleavingPerm, vectorType.getContext());
-  auto deinterleavedView = b.create<memref::TransposeOp>(loc, transposedAllocOp, AffineMapAttr::get(deinterleavingMap));
-  auto transposedAllocTensorOp = b.create<bufferization::ToTensorOp>(loc, deinterleavedView, /*restrict=*/true, /*writable=*/true);
+  // AffineMap deinterleavingMap = AffineMap::getPermutationMap(deinterleavingPerm, vectorType.getContext());
+  // auto deinterleavedView = b.create<memref::TransposeOp>(loc, transposedAllocOp, AffineMapAttr::get(deinterleavingMap));
+  auto transposedAllocTensorOp = b.create<bufferization::ToTensorOp>(loc, transposedAllocOp, /*restrict=*/true, /*writable=*/true);
   auto c0 = b.create<arith::ConstantIndexOp>(loc, 0);
-  ArrayRef<int64_t> writePackedShape = deinterleavedView.getType().getShape();
+  ArrayRef<int64_t> writePackedShape = transposedAllocOp.getType().getShape();
   VectorType writePackedType = VectorType::get(writePackedShape, vectorType.getElementType());
   auto shapeCastOp = b.create<vector::ShapeCastOp>(loc, writePackedType, vector);
   SmallVector<Value> indices(writePackedType.getRank(), c0);
