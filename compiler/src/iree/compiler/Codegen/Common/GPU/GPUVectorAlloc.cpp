@@ -29,6 +29,7 @@ namespace {
 
 // For optimal performance we always want to copy 128 bits.
 constexpr int copyVectorNumBits = 128;
+using StrideOrder = std::pair<int64_t, int64_t>;
 
 /// Filter to decide which contraction ops need allocations.
 static bool contractOpFilter(Operation *op) {
@@ -96,6 +97,7 @@ static Value readVectorFromTensor(OpBuilder &b, VectorType vectorType,
       .getResult();
 }
 
+
 struct GPUVectorAllocPass final
     : impl::GPUVectorAllocPassBase<GPUVectorAllocPass> {
   void runOnOperation() override {
@@ -123,8 +125,16 @@ struct GPUVectorAllocPass final
       // Promote both of the input operands, excluding the accumulator.
       builder.setInsertionPoint(op);
       OpOperand &operand = op.getInputMutable();
+
+      // Maybe transpose the input; so that it stores
+      // to LDS in a read friendly manner
+      IREE::VectorExt::NestedLayoutAttr vectorLayout =
+        dyn_cast<IREE::VectorExt::NestedLayoutAttr>(op.getLayoutAttr());
+      SmallVector<int64_t> readThreadTileOrder = vectorLayout.getThreadTileOrder();
+      auto transposed = builder.create<vector::TransposeOp>(op.getLoc(), operand.get(), readThreadTileOrder);
+
       FailureOr<Value> ret =
-          allocateTensorForVector(builder, op->getLoc(), operand.get());
+          allocateTensorForVector(builder, op->getLoc(), transposed);
       if (failed(ret)) {
         return signalPassFailure();
       }
