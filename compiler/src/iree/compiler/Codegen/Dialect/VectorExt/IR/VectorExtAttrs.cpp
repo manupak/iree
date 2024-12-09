@@ -114,6 +114,24 @@ SmallVector<int64_t> NestedLayoutAttr::getUndistributedPackedShape() const {
   return shape;
 }
 
+/// Arrange the thread strides in decreasing order and
+/// return that order.
+SmallVector<int64_t> NestedLayoutAttr::getThreadTileOrder() const {
+  using StrideOrder = std::pair<int64_t, int64_t>;
+  SmallVector<StrideOrder> threadStrides;
+  threadStrides.reserve(getRank());
+  for(auto[idx, stride] : llvm::enumerate(getThreadStrides())){
+    threadStrides.push_back({idx, stride});
+  }
+  llvm::sort(threadStrides, [](const StrideOrder& lhs, const StrideOrder& rhs){
+    return lhs.second > rhs.second;
+  });
+  SmallVector<int64_t> order = llvm::map_to_vector(threadStrides, [](const StrideOrder& sorder){
+    return sorder.first;
+  });
+  return order;
+}
+
 // Gets the rank of the undistributed vector for this layout.
 int64_t NestedLayoutAttr::getRank() const {
   // The layout requires that all size lists are the same length and match

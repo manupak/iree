@@ -19,6 +19,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/Passes.h"
+#include "iree/compiler/Codegen/Common/VectorLayoutAnalysis.h"
+
+#define DEBUG_TYPE "iree-codegen-gpu-vector-alloc"
 
 namespace mlir::iree_compiler {
 
@@ -29,6 +32,7 @@ namespace {
 
 // For optimal performance we always want to copy 128 bits.
 constexpr int copyVectorNumBits = 128;
+using StrideOrder = std::pair<int64_t, int64_t>;
 
 using StrideOrder = std::pair<int64_t, int64_t>;
 
@@ -126,53 +130,30 @@ static SmallVector<int64_t> getDeInterleavingPerm(int64_t preDistributedRank){
 // This allocation is always static as vectors are currently always static
 // where this is used.
 static FailureOr<Value> allocateTensorForVector(OpBuilder &b, Location loc,
-                                                Value vector, IREE::VectorExt::NestedLayoutAttr vectorLayout) {
+                                                Value vector) {
   VectorType vectorType = llvm::cast<VectorType>(vector.getType());
   if (vectorType.isScalable()) {
     return failure();
   }
-  //Obtain thread contigous shape.
-  //i.e. if the threads are to be read out contigously
-  SmallVector<StrideOrder> threadStrides;
-  threadStrides.reserve(vectorLayout.getRank());
-  for(auto[idx, stride] : llvm::enumerate(vectorLayout.getThreadStrides())){
-    threadStrides.push_back({idx, stride});
-  }
-  llvm::sort(threadStrides, [](const StrideOrder& lhs, const StrideOrder& rhs){
-    return lhs.second > rhs.second;
-  });
-  SmallVector<int64_t> packedShape = vectorLayout.getUndistributedPackedShape();
-  SmallVector<int64_t> threadContigousShape = packedShape;
-  int64_t threadTileOffset = 3;
-  SmallVector<int64_t> threadTilePerm = llvm::to_vector(llvm::seq<int64_t>(0, vectorLayout.getRank() * 5));
-  // SmallVector<int64_t> inverseThreadTilePerm = llvm::to_vector(llvm::seq<int64_t>(0, vectorLayout.getRank() * 5));
-  for(auto[idx, strideOrder] : llvm::enumerate(threadStrides)){
-    threadContigousShape[threadTileOffset + idx*5] = packedShape[threadTileOffset + strideOrder.first*5];
-    threadTilePerm[threadTileOffset + idx*5] = threadTileOffset + strideOrder.first*5;
-    // inverseThreadTilePerm[threadTileOffset + strideOrder.first] = threadTileOffset + idx;
-  }
-  AffineMap transposeMap = AffineMap::getPermutationMap(threadTilePerm, b.getContext());
-  // AffineMap inverseTransposeMap = AffineMap::getPermutationMap(inverseThreadTilePerm, b.getContext());
 
   Attribute sharedMemoryAddrSpace = gpu::AddressSpaceAttr::get(
-    b.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
-  MemRefType packedWriteType =
-      MemRefType::get(threadContigousShape, vectorType.getElementType(), AffineMap{}, sharedMemoryAddrSpace);
-  auto allocOp = b.create<memref::AllocOp>(loc, packedWriteType);
-  auto transposedAllocOp = b.create<memref::TransposeOp>(loc, allocOp, AffineMapAttr::get(transposeMap));
-  // SmallVector<int64_t> deinterleavingPerm = getDeInterleavingPerm(vectorType.getRank());
-  // llvm::errs() << "deinterleavingPerm="; llvm::interleaveComma(deinterleavingPerm, llvm::errs()); llvm::errs() << "\n";
-  // AffineMap deinterleavingMap = AffineMap::getPermutationMap(deinterleavingPerm, vectorType.getContext());
-  // auto deinterleavedView = b.create<memref::TransposeOp>(loc, transposedAllocOp, AffineMapAttr::get(deinterleavingMap));
-  auto transposedAllocTensorOp = b.create<bufferization::ToTensorOp>(loc, transposedAllocOp, /*restrict=*/true, /*writable=*/true);
-  auto c0 = b.create<arith::ConstantIndexOp>(loc, 0);
-  ArrayRef<int64_t> writePackedShape = transposedAllocOp.getType().getShape();
-  VectorType writePackedType = VectorType::get(writePackedShape, vectorType.getElementType());
-  auto shapeCastOp = b.create<vector::ShapeCastOp>(loc, writePackedType, vector);
-  SmallVector<Value> indices(writePackedType.getRank(), c0);
-  SmallVector<bool> inBounds(writePackedType.getRank(), true);
-  Value ret = b.create<vector::TransferWriteOp>(loc, shapeCastOp, transposedAllocTensorOp, indices, inBounds).getResult();
-  return ret;
+      b.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
+
+  RankedTensorType tensorType =
+      RankedTensorType::get(vectorType.getShape(), vectorType.getElementType(),
+                            sharedMemoryAddrSpace);
+  // Vectors are always statically shaped.
+  auto allocTensorOp = b.create<bufferization::AllocTensorOp>(
+      loc, tensorType, ValueRange{}, Value());
+  allocTensorOp.setMemorySpaceAttr(sharedMemoryAddrSpace);
+
+  Value c0 = b.create<arith::ConstantIndexOp>(loc, 0);
+  SmallVector<Value> indices(vectorType.getRank(), c0);
+  SmallVector<bool> inBounds(vectorType.getRank(), true);
+  Value copied = b.create<vector::TransferWriteOp>(loc, vector, allocTensorOp,
+                                                   indices, inBounds)
+                     .getResult();
+  return copied;
 }
 
 static Value readVectorFromTensor(OpBuilder &b, VectorType vectorType,
@@ -185,14 +166,29 @@ static Value readVectorFromTensor(OpBuilder &b, VectorType vectorType,
   SmallVector<Value> indices(writtenVectorType.getRank(), c0);
   SmallVector<bool> inBounds(writtenVectorType.getRank(), true);
   auto read = b.create<vector::TransferReadOp>(loc, writtenVectorType, written, indices, inBounds);
-  auto shapeCastOp = b.create<vector::ShapeCastOp>(loc, vectorType, read);
-  return shapeCastOp;
+  return read;
+}
+
+static SmallVector<int64_t> getInvertPerm(ArrayRef<int64_t> perm){
+  SmallVector<int64_t> ret(perm.size(), -1);
+  for(auto [original, permed] : llvm::enumerate(perm)){
+    ret[permed] = original;
+  }
+  return ret;
 }
 
 struct GPUVectorAllocPass final
     : impl::GPUVectorAllocPassBase<GPUVectorAllocPass> {
   void runOnOperation() override {
     FunctionOpInterface funcOp = getOperation();
+
+    // Run the analysis and determine the layouts.
+    LLVM_DEBUG(llvm::dbgs() << "Running Layout Analysis\n");
+    VectorLayoutAnalysis analysis(funcOp);
+    if (failed(analysis.run()))
+      return signalPassFailure();
+    LLVM_DEBUG(llvm::dbgs() << "Layout Analysis Succeded\n");
+    LLVM_DEBUG(llvm::dbgs() << "\n\n");
 
     SmallVector<IREE::VectorExt::ToLayoutOp> opsToPromote;
     funcOp.walk([&](IREE::VectorExt::ToLayoutOp op) {
@@ -216,14 +212,19 @@ struct GPUVectorAllocPass final
       // Promote both of the input operands, excluding the accumulator.
       builder.setInsertionPoint(op);
       OpOperand &operand = op.getInputMutable();
+
+      // Maybe transpose the input; so that it stores
+      // to LDS in a read friendly manner
       IREE::VectorExt::NestedLayoutAttr vectorLayout =
         dyn_cast<IREE::VectorExt::NestedLayoutAttr>(op.getLayoutAttr());
-      if(!vectorLayout){
-        return signalPassFailure();
-      }
+      SmallVector<int64_t> readThreadTileOrder = vectorLayout.getThreadTileOrder();
+
+      // auto wrTransposed = builder.create<vector::TransposeOp>(op.getLoc(), op.getOperand(), readThreadTileOrder);
+
+      // vectorLayout.getBa
 
       FailureOr<Value> ret =
-          allocateTensorForVector(builder, op->getLoc(), operand.get(), vectorLayout);
+          allocateTensorForVector(builder, op->getLoc(), op.getOperand());
       if (failed(ret)) {
         return signalPassFailure();
       }
@@ -235,7 +236,23 @@ struct GPUVectorAllocPass final
 
       VectorType inputTy = cast<VectorType>(op.getType());
       Value read = readVectorFromTensor(builder, inputTy, synced.getResult(0));
-      operand.set(read);
+      // auto rdTransposed = builder.create<vector::TransposeOp>(op.getLoc(), read, getInvertPerm(readThreadTileOrder));
+
+      SmallVector<int64_t> elementTile = llvm::to_vector(vectorLayout.getElementTile());
+      SmallVector<int64_t> batchTile = llvm::to_vector(vectorLayout.getBatchTile());
+      int64_t& elementTileLen = elementTile.back();
+      int64_t& batchTileLen = batchTile.back();
+      if(elementTileLen < 8){
+        elementTileLen = elementTileLen * batchTileLen;
+        batchTileLen = 1;
+      }
+    
+      auto newLayout = IREE::VectorExt::NestedLayoutAttr::get(
+        op.getContext(), vectorLayout.getSubgroupTile(),  batchTile, vectorLayout.getOuterTile(),
+        vectorLayout.getThreadTile(), elementTile, vectorLayout.getSubgroupStrides(), vectorLayout.getThreadStrides()
+      );
+      auto newLayoutOp = builder.create<IREE::VectorExt::ToLayoutOp>(op.getLoc(), read, newLayout);
+      operand.set(newLayoutOp);
 
       // Remove the shared_memory_conversion attribute from the to_layout
       // operation.

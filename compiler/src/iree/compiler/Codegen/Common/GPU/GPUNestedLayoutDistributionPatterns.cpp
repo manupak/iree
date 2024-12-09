@@ -887,57 +887,65 @@ struct DistributeBatchOuterToLayoutConversions final
     if (layoutA.getThreadStrides() != layoutB.getThreadStrides()) {
       return failure();
     }
-    if (layoutA.getElementTile() != layoutB.getElementTile()) {
-      return failure();
-    }
+    // if (layoutA.getElementTile() != layoutB.getElementTile()) {
+    //   return failure();
+    // }
 
     auto batchTileA = SmallVector<int64_t>(layoutA.getBatchTile());
     auto outerTileA = SmallVector<int64_t>(layoutA.getOuterTile());
+    auto elementTileA = SmallVector<int64_t>(layoutA.getElementTile());
     auto batchTileB = SmallVector<int64_t>(layoutB.getBatchTile());
     auto outerTileB = SmallVector<int64_t>(layoutB.getOuterTile());
+    auto elementTileB = SmallVector<int64_t>(layoutB.getElementTile());
 
     // Check if there is a batch/outer tile mismatch.
-    if (batchTileA == batchTileB && outerTileA == outerTileB) {
+    if (batchTileA == batchTileB && outerTileA == outerTileB && elementTileA == elementTileB) {
       return rewriter.notifyMatchFailure(toLayoutOp,
                                          "trivial layout conversion");
     }
 
     SmallVector<int64_t> shapeA = layoutA.getDistributedShape();
     SmallVector<int64_t> shapeB = layoutB.getDistributedShape();
-    int64_t rank = layoutA.getRank();
+    // int64_t rank = layoutA.getRank();
 
     // Interleave batch and outer dims by transposing.
 
     // Build a permutation for interleaving.
-    auto interleavePermutation =
-        llvm::to_vector(llvm::seq<int64_t>(shapeA.size()));
-    for (int i = 0; i < rank; ++i) {
-      // Batch tile : [0...rank]
-      // OuterTile : [rank+1...2*rank]
-      // Interleave : [batch0, outer0, batch1, outer1,...]
-      interleavePermutation[2 * i] = i;
-      interleavePermutation[2 * i + 1] = i + rank;
-    }
+    // auto interleavePermutation =
+    //     llvm::to_vector(llvm::seq<int64_t>(shapeA.size()));
+    // for (int i = 0; i < rank; ++i) {
+    //   // Batch tile : [0...rank]
+    //   // OuterTile :  [rank+1...2*rank]
+    //   // ElementTile :[2*rank+1...3*rank]
+    //   // Interleave : [batch0, outer0, element0, batch1, outer1, element1, ...]
+    //   interleavePermutation[3 * i] = i;
+    //   interleavePermutation[3 * i + 1] = i + rank;
+    //   interleavePermutation[3 * i + 2] = i + 2*rank;
+    // }
 
-    auto interleaved = rewriter.create<vector::TransposeOp>(
-        loc, getDistributed(rewriter, input, layoutA), interleavePermutation);
+    // auto interleaved = rewriter.create<vector::TransposeOp>(
+    //     loc, getDistributed(rewriter, input, layoutA), interleavePermutation);
 
-    // Shape cast to match the new layout.
+    // // Shape cast to match the new layout.
 
-    SmallVector<int64_t> transposedShapeB(shapeB);
-    applyPermutationToVector(transposedShapeB, interleavePermutation);
-    Type reshapedType = VectorType::get(
-        transposedShapeB, interleaved.getResultVectorType().getElementType());
+    // SmallVector<int64_t> transposedShapeB(shapeB);
+    // applyPermutationToVector(transposedShapeB, interleavePermutation);
+    // Type reshapedType = VectorType::get(
+    //     transposedShapeB, interleaved.getResultVectorType().getElementType());
 
-    auto reshaped =
-        rewriter.create<vector::ShapeCastOp>(loc, reshapedType, interleaved);
+    // auto reshaped =
+    //     rewriter.create<vector::ShapeCastOp>(loc, reshapedType, interleaved);
 
-    // Inverse transpose to preserve original order.
-    SmallVector<int64_t> invertedPermutation =
-        invertPermutationVector(interleavePermutation);
+    // // Inverse transpose to preserve original order.
+    // SmallVector<int64_t> invertedPermutation =
+    //     invertPermutationVector(interleavePermutation);
 
-    auto layouted = rewriter.create<vector::TransposeOp>(loc, reshaped,
-                                                         invertedPermutation);
+    // auto layouted = rewriter.create<vector::TransposeOp>(loc, reshaped,
+    //                                                      invertedPermutation);
+    Type elementType = cast<VectorType>(toLayoutOp.getResult().getType()).getElementType();
+    Type reshapedType = VectorType::get(shapeB, elementType);
+    auto layouted = rewriter.create<vector::ShapeCastOp>(
+        loc, reshapedType, getDistributed(rewriter, input, layoutA));
 
     replaceOpWithDistributedValues(rewriter, toLayoutOp, layouted.getResult());
     return success();

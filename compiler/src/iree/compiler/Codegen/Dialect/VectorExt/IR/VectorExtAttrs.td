@@ -203,6 +203,11 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
 
     // Get the undistributed shape that is subgroup x batch x outer x thread x element
     SmallVector<int64_t> getUndistributedPackedShape() const;
+
+    // thread_strides is a way to define the how threads are distributed
+    // across pre-distributed dimensions. This function will obtain the
+    // ordering.
+    SmallVector<int64_t> getThreadTileOrder() const;
   }];
 
   let genVerifyDecl = 1;
