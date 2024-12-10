@@ -887,9 +887,9 @@ struct DistributeBatchOuterToLayoutConversions final
     if (layoutA.getThreadStrides() != layoutB.getThreadStrides()) {
       return failure();
     }
-    if (layoutA.getElementTile() != layoutB.getElementTile()) {
-      return failure();
-    }
+    // if (layoutA.getElementTile() != layoutB.getElementTile()) {
+    //   return failure();
+    // }
 
     auto batchTileA = SmallVector<int64_t>(layoutA.getBatchTile());
     auto outerTileA = SmallVector<int64_t>(layoutA.getOuterTile());
@@ -913,10 +913,12 @@ struct DistributeBatchOuterToLayoutConversions final
         llvm::to_vector(llvm::seq<int64_t>(shapeA.size()));
     for (int i = 0; i < rank; ++i) {
       // Batch tile : [0...rank]
-      // OuterTile : [rank+1...2*rank]
-      // Interleave : [batch0, outer0, batch1, outer1,...]
-      interleavePermutation[2 * i] = i;
-      interleavePermutation[2 * i + 1] = i + rank;
+      // OuterTile :  [rank+1...2*rank]
+      // ElementTile :[2*rank+1...3*rank]
+      // Interleave : [batch0, outer0, element0, batch1, outer1, element1, ...]
+      interleavePermutation[3 * i] = i;
+      interleavePermutation[3 * i + 1] = i + rank;
+      interleavePermutation[3 * i + 2] = i + 2*rank;
     }
 
     auto interleaved = rewriter.create<vector::TransposeOp>(

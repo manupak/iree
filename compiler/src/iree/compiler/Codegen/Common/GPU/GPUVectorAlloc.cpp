@@ -19,6 +19,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 
 namespace mlir::iree_compiler {
 
@@ -86,11 +87,12 @@ static FailureOr<Value> allocateTensorForVector(OpBuilder &b, Location loc,
   return copied;
 }
 
-static Value readVectorFromTensor(OpBuilder &b, VectorType vectorType,
-                                  Value tensor) {
+static Value readVectorFromTensor(OpBuilder &b, Value tensor) {
   Value c0 = b.create<arith::ConstantIndexOp>(tensor.getLoc(), 0);
-  SmallVector<Value> indices(vectorType.getRank(), c0);
-  SmallVector<bool> inBounds(vectorType.getRank(), true);
+  TensorType tensorType = cast<TensorType>(tensor.getType());
+  VectorType vectorType = VectorType::get(tensorType.getShape(), tensorType.getElementType());
+  SmallVector<Value> indices(tensorType.getRank(), c0);
+  SmallVector<bool> inBounds(tensorType.getRank(), true);
   return b
       .create<vector::TransferReadOp>(tensor.getLoc(), vectorType, tensor,
                                       indices, inBounds)
@@ -131,10 +133,10 @@ struct GPUVectorAllocPass final
       IREE::VectorExt::NestedLayoutAttr vectorLayout =
         dyn_cast<IREE::VectorExt::NestedLayoutAttr>(op.getLayoutAttr());
       SmallVector<int64_t> readThreadTileOrder = vectorLayout.getThreadTileOrder();
-      auto transposed = builder.create<vector::TransposeOp>(op.getLoc(), operand.get(), readThreadTileOrder);
+      // auto wrTransposed = builder.create<vector::TransposeOp>(op.getLoc(), operand.get(), readThreadTileOrder);
 
       FailureOr<Value> ret =
-          allocateTensorForVector(builder, op->getLoc(), transposed);
+          allocateTensorForVector(builder, op->getLoc(), operand.get());
       if (failed(ret)) {
         return signalPassFailure();
       }
@@ -143,9 +145,48 @@ struct GPUVectorAllocPass final
       auto synced =
           builder.create<IREE::GPU::ValueBarrierOp>(op->getLoc(), *ret);
 
-      VectorType inputTy = cast<VectorType>(op.getType());
-      Value read = readVectorFromTensor(builder, inputTy, synced.getResult(0));
-      operand.set(read);
+      Value read = readVectorFromTensor(builder, synced.getResult(0));
+      SmallVector<int64_t> invertPerm = invertPermutationVector(readThreadTileOrder);
+      // auto rdTransposed = builder.create<vector::TransposeOp>(op.getLoc(), read, invertPerm);
+
+      SmallVector<int64_t> elementTile = llvm::to_vector(vectorLayout.getElementTile());
+      SmallVector<int64_t> batchTile = llvm::to_vector(vectorLayout.getBatchTile());
+      SmallVector<int64_t> outerTile = llvm::to_vector(vectorLayout.getOuterTile());
+      int64_t& elementTileLen = elementTile.back();
+      int64_t& batchTileLen = batchTile.back();
+      int64_t& outerTileLen = outerTile.back();
+      // TODO: maybe we should obtain this from somewhere ?
+      constexpr int64_t maxVecLenBits = 128;
+      // Pull in in-thread elements to reach max
+      // vector length.
+      Type elemType = op.getType().getElementType();
+      int64_t maxVecLen = maxVecLenBits / elemType.getIntOrFloatBitWidth();
+      int64_t remainingElementsForVec = maxVecLen / elementTileLen;
+      if(remainingElementsForVec <= outerTileLen){
+        elementTileLen *= outerTileLen / remainingElementsForVec;
+        outerTileLen = outerTileLen / remainingElementsForVec;
+      }
+      else{
+        elementTileLen *= outerTileLen;
+        outerTileLen = 1;
+        remainingElementsForVec /= outerTileLen;
+        if(remainingElementsForVec <= batchTileLen){
+          elementTileLen *= batchTileLen / remainingElementsForVec;
+          batchTileLen = batchTileLen / remainingElementsForVec;
+        }
+        else{
+          elementTileLen *= batchTileLen;
+          batchTileLen = 1;
+        }
+      }
+
+       auto newLayout = IREE::VectorExt::NestedLayoutAttr::get(
+        op.getContext(), vectorLayout.getSubgroupTile(),  batchTile, vectorLayout.getOuterTile(),
+        vectorLayout.getThreadTile(), elementTile, vectorLayout.getSubgroupStrides(), vectorLayout.getThreadStrides()
+      );
+      auto newLayoutOp = builder.create<IREE::VectorExt::ToLayoutOp>(op.getLoc(), read, newLayout);
+
+      operand.set(newLayoutOp);
 
       // Remove the shared_memory_conversion attribute from the to_layout
       // operation.
