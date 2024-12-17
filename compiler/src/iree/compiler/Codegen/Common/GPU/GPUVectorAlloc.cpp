@@ -85,11 +85,12 @@ static FailureOr<Value> allocateTensorForVector(OpBuilder &b, Location loc,
   return copied;
 }
 
-static Value readVectorFromTensor(OpBuilder &b, VectorType vectorType,
-                                  Value tensor) {
+static Value readVectorFromTensor(OpBuilder &b, Value tensor) {
   Value c0 = b.create<arith::ConstantIndexOp>(tensor.getLoc(), 0);
-  SmallVector<Value> indices(vectorType.getRank(), c0);
-  SmallVector<bool> inBounds(vectorType.getRank(), true);
+  TensorType tensorType = cast<TensorType>(tensor.getType());
+  VectorType vectorType = VectorType::get(tensorType.getShape(), tensorType.getElementType());
+  SmallVector<Value> indices(tensorType.getRank(), c0);
+  SmallVector<bool> inBounds(tensorType.getRank(), true);
   return b
       .create<vector::TransferReadOp>(tensor.getLoc(), vectorType, tensor,
                                       indices, inBounds)
@@ -120,9 +121,28 @@ struct GPUVectorAllocPass final
       builder.setInsertionPointToStart(op->getBlock());
       builder.create<gpu::BarrierOp>(op->getLoc());
 
+      OpOperand &operand = op.getInputMutable();
+      builder.setInsertionPointAfterValue(operand.get());
+      SmallVector<int64_t> perm;
+      if(auto nestedLayoutAttr = dyn_cast<IREE::VectorExt::NestedLayoutAttr>(op.getLayout())){
+        ArrayRef<int64_t> elementTile = nestedLayoutAttr.getElementTile();
+        int64_t largestIdx = 0;
+        int64_t largestSize = elementTile[0];
+        for(auto [idx, elementTileLen] : llvm::enumerate(elementTile)){
+          if(elementTileLen > largestSize){
+            largestIdx = idx;
+            largestSize = elementTileLen;
+          }
+          llvm::errs() << "idx=" << idx << ",elementTileLen=" << elementTileLen << ",largestSize=" << largestSize << ",largestIdx=" << largestIdx << "\n";
+        }
+        perm = llvm::to_vector(llvm::seq<int64_t>(elementTile.size()));
+        perm[perm.size() - 1] = largestIdx;
+        perm[largestIdx] = perm.size() - 1;
+        operand.set(builder.create<vector::TransposeOp>(op.getLoc(), operand.get(), perm));
+      }
+
       // Promote both of the input operands, excluding the accumulator.
       builder.setInsertionPoint(op);
-      OpOperand &operand = op.getInputMutable();
       FailureOr<Value> ret =
           allocateTensorForVector(builder, op->getLoc(), operand.get());
       if (failed(ret)) {
@@ -133,8 +153,14 @@ struct GPUVectorAllocPass final
       auto synced =
           builder.create<IREE::GPU::ValueBarrierOp>(op->getLoc(), *ret);
 
-      VectorType inputTy = cast<VectorType>(op.getType());
-      Value read = readVectorFromTensor(builder, inputTy, synced.getResult(0));
+      Value read = readVectorFromTensor(builder, synced.getResult(0));
+      if(isa<IREE::VectorExt::NestedLayoutAttr>(op.getLayout())){
+        SmallVector<int64_t> invPerm(perm.size(), 1);
+        for(auto [idx, dim] : llvm::enumerate(perm)){
+          invPerm[dim] = idx;
+        }
+        read = builder.create<vector::TransposeOp>(op.getLoc(), read, invPerm);
+      }
       operand.set(read);
 
       // Remove the shared_memory_conversion attribute from the to_layout
