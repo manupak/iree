@@ -228,6 +228,9 @@ static void addGPUVectorizationPasses(OpPassManager &funcPassManager,
   funcPassManager.addPass(IREE::LinalgExt::createDecomposeIm2colPass());
   funcPassManager.addPass(
       IREE::VectorExt::createVectorizeIREEVectorExtOpsPass());
+  funcPassManager.addPass(
+      memref::createResolveShapedTypeResultDimsPass());
+  funcPassManager.addPass(createCanonicalizerPass());
   // Vectorize.
   GenericVectorizationPassOptions options;
   options.vectorizePadding = true;
@@ -235,8 +238,11 @@ static void addGPUVectorizationPasses(OpPassManager &funcPassManager,
   options.vectorizeGatherAccesses = true;
   options.enableCleanup = false;
   options.foldCastIntoContract = true;
+  options.enableVectorMasking = true;
   funcPassManager.addPass(createGenericVectorizationPass(options));
   funcPassManager.addPass(createCanonicalizerPass());
+  funcPassManager.addPass(
+      memref::createResolveShapedTypeResultDimsPass());
   funcPassManager.addPass(createCSEPass());
   // Run subset hoisting to convert iter_args to vectors.
   funcPassManager.addPass(createOptimizeTensorInsertExtractSlicesPass());
@@ -1161,7 +1167,7 @@ static void buildLLVMGPUCodegenConfigurationPassPipelineImpl(
     funcPassManager.addPass(createGPUGeneralizeNamedOpsPass);
     addCommonTargetExecutablePreprocessingPasses(funcPassManager);
     addEncodingToNopPasses(funcPassManager);
-    funcPassManager.addPass(createBlockDynamicDimensionsPass);
+    // funcPassManager.addPass(createBlockDynamicDimensionsPass);
     funcPassManager.addPass(createConfigTrackingCanonicalizerPass);
     funcPassManager.addPass(createCSEPass);
   }
