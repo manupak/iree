@@ -566,6 +566,24 @@ static void propagateLayoutToGatherOp(
   update(result, changed);
 }
 
+static void propogateLayoutToMaskOp(
+  vector::MaskOp mask,
+  ArrayRef<const DistributionLayout *> operandLattices,
+  ArrayRef<DistributionLayout *> resultLattices,
+  std::function<void(DistributionLayout *, ChangeResult)> update){
+
+  DistributionLayout *result = resultLattices[0];
+  const DistributionLayout *maskLayout = operandLattices[0];
+  // If result lattice already has a layout, we cannot do anything. We do not
+  // impose layout conflicts on results.
+  if (result->hasLayout()) {
+    return;
+  }
+
+  ChangeResult changed = result->resolve(maskLayout);
+  update(result, changed);
+}
+
 void propagationTransferFunction(
     Operation *op, ArrayRef<const DistributionLayout *> operandLattices,
     ArrayRef<DistributionLayout *> resultLattices,
@@ -603,6 +621,11 @@ void propagationTransferFunction(
 
   if (auto gather = dyn_cast<vector::GatherOp>(op)) {
     propagateLayoutToGatherOp(gather, operandLattices, resultLattices, update);
+    return;
+  }
+
+  if (auto mask = dyn_cast<vector::MaskOp>(op)){
+    propogateLayoutToMaskOp(mask, operandLattices, resultLattices, update);
     return;
   }
 

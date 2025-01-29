@@ -1536,6 +1536,42 @@ struct DistributeCreateMask final
   int64_t subgroupSize;
 };
 
+struct DistributeMask final : OpDistributionPattern<vector::MaskOp> {
+  using OpDistributionPattern::OpDistributionPattern;
+
+  LogicalResult matchAndRewrite(vector::MaskOp maskOp,
+                                DistributionSignature &signature,
+                                PatternRewriter &rewriter) const override {
+    // VectorValue mask = maskOp.getMask();
+    // VectorLayoutInterface layout = dyn_cast<NestedLayoutAttr>(signature[mask]);
+    // if (!layout) {
+    //   return rewriter.notifyMatchFailure(maskOp,
+    //                                      "layout must be NestedLayoutAttr");
+    // }
+    // VectorValue distrMask = getDistributed(rewriter, mask, layout);
+
+    // auto oldBody = maskOp.getBody();
+    
+    // // Create a new vector.mask op.
+    // ValueRange newYieldedValuesRange(newYieldedValues);
+    // TypeRange newResultTypes(newYieldedValuesRange);
+    // auto newOp = rewriter.create<vector::MaskOp>(
+    //     maskOp->getLoc(), newResultTypes, maskOp.getMask(), maskOp.getPassthru(),
+    //     /*maskableOp=*/nullptr,
+    //     /*maskRegionBuilder=*/[](OpBuilder &b, Operation *) {});
+    // auto region = maskOp.getBody();
+    // newOp.getRegion().takeBody(maskOp.getMaskRegion());
+
+    // // Replace all uses of the old vector.mask op.
+    // int idx = 0;
+    // for (int i = 0; i < static_cast<int>(maskOp->getNumResults()); ++i) {
+    //   if (!newReturnValues[i])
+    //     newReturnValues[i] = newOp->getResult(idx++);
+    // }
+    return failure();
+  }
+};
+
 } // namespace
 
 void populateGPUDistributeNestedLayoutAttrPatterns(RewritePatternSet &patterns,
