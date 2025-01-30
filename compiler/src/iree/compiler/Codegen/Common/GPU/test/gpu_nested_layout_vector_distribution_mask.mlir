@@ -83,7 +83,7 @@ func.func @masked_read_write_reduce(%arg0 : memref<?x128xf16>, %arg1 : memref<12
   %41 = vector.create_mask %dyn, %c128 : vector<256x128xi1>
   %42 = vector.transfer_read %arg0[%c0, %c0], %cst_6, %41 {in_bounds = [true, true]} : memref<?x128xf16>, vector<256x128xf16>
   %43 = iree_vector_ext.to_layout %42 to layout(#nested) : vector<256x128xf16>
-  %44 = vector.multi_reduction <add>, %43, %cst_1 [0] : vector<256x128xf16> to vector<128xf16>
+  %44 = vector.mask %41 { vector.multi_reduction <add>, %43, %cst_1 [0] : vector<256x128xf16> to vector<128xf16> } : vector<256x128xi1> -> vector<128xf16>
   vector.transfer_write %44, %arg1[%c0] {in_bounds = [true]} : vector<128xf16>, memref<128xf16>
   return
 }

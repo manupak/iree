@@ -1517,8 +1517,12 @@ struct DistributeCreateMask final
           creatMaskOp, "missing nested layout for step op result");
     }
     SmallVector<Value> subgroupIndices, threadIndices;
-    populateWarpAndThreadIndices(rewriter, threadId, subgroupSize, resultLayout,
-                                 subgroupIndices, threadIndices);
+    if (failed(populateWarpAndThreadIndices(rewriter, threadId, subgroupSize,
+                                            resultLayout, subgroupIndices,
+                                            threadIndices))) {
+      return rewriter.notifyMatchFailure(
+          creatMaskOp, "warp or thread tiles have overlapping strides");
+    }
 
     SmallVector<Value> distributedBounds =
         createDistributedBounds(rewriter, loc, creatMaskOp.getOperands(),
@@ -1542,33 +1546,22 @@ struct DistributeMask final : OpDistributionPattern<vector::MaskOp> {
   LogicalResult matchAndRewrite(vector::MaskOp maskOp,
                                 DistributionSignature &signature,
                                 PatternRewriter &rewriter) const override {
-    // VectorValue mask = maskOp.getMask();
-    // VectorLayoutInterface layout = dyn_cast<NestedLayoutAttr>(signature[mask]);
-    // if (!layout) {
-    //   return rewriter.notifyMatchFailure(maskOp,
-    //                                      "layout must be NestedLayoutAttr");
-    // }
-    // VectorValue distrMask = getDistributed(rewriter, mask, layout);
-
-    // auto oldBody = maskOp.getBody();
-    
-    // // Create a new vector.mask op.
-    // ValueRange newYieldedValuesRange(newYieldedValues);
-    // TypeRange newResultTypes(newYieldedValuesRange);
-    // auto newOp = rewriter.create<vector::MaskOp>(
-    //     maskOp->getLoc(), newResultTypes, maskOp.getMask(), maskOp.getPassthru(),
-    //     /*maskableOp=*/nullptr,
-    //     /*maskRegionBuilder=*/[](OpBuilder &b, Operation *) {});
-    // auto region = maskOp.getBody();
-    // newOp.getRegion().takeBody(maskOp.getMaskRegion());
-
-    // // Replace all uses of the old vector.mask op.
-    // int idx = 0;
-    // for (int i = 0; i < static_cast<int>(maskOp->getNumResults()); ++i) {
-    //   if (!newReturnValues[i])
-    //     newReturnValues[i] = newOp->getResult(idx++);
-    // }
-    return failure();
+    SmallVector<Value> returns = maskOp.getBody()->getTerminator()->getOperands();
+    for(auto [idx, ret] : llvm::enumerate(returns)){
+      if (VectorValue vectorRet = dyn_cast<VectorValue>(ret)){
+        VectorValue maskRet = cast<VectorValue>(maskOp.getResult(idx));
+        VectorLayoutInterface layout = dyn_cast<NestedLayoutAttr>(signature[maskRet]);
+        if (!layout) {
+          return rewriter.notifyMatchFailure(maskOp,
+                                            "layout must be NestedLayoutAttr");
+        }
+        ret = getDistributed(rewriter, vectorRet, layout);
+      }
+    }
+    rewriter.eraseOp(maskOp.getBody()->getTerminator());
+    rewriter.inlineBlockBefore(maskOp.getBody(), maskOp);
+    replaceOpWithDistributedValues(rewriter, maskOp, returns);
+    return success();
   }
 };
 
@@ -1588,6 +1581,7 @@ void populateGPUDistributeNestedLayoutAttrPatterns(RewritePatternSet &patterns,
   patterns.add<DistributeStep>(patterns.getContext(), threadId, subgroupSize);
   patterns.add<DistributeCreateMask>(patterns.getContext(), threadId,
                                      subgroupSize);
+  patterns.add<DistributeMask>(patterns.getContext());
 }
 
 }; // namespace mlir::iree_compiler
