@@ -95,3 +95,69 @@ builtin.module attributes { transform.with_named_sequence } {
     transform.yield
   }
 }
+
+// -----
+
+#lhs = #iree_vector_ext.nested_layout<
+  subgroup_tile = [2],
+  batch_tile = [2],
+  outer_tile = [2],
+  thread_tile = [16],
+  element_tile = [2],
+
+  subgroup_strides = [1],
+  thread_strides = [1]
+>
+
+#rhs = #iree_vector_ext.nested_layout<
+  subgroup_tile = [2, 2],
+  batch_tile = [2, 2],
+  outer_tile = [2, 2],
+  thread_tile = [8, 16],
+  element_tile = [2, 2],
+
+  subgroup_strides = [2, 1],
+  thread_strides = [16, 1]
+>
+
+#out = #iree_vector_ext.nested_layout<
+  subgroup_tile = [2],
+  batch_tile = [2],
+  outer_tile = [2],
+  thread_tile = [8],
+  element_tile = [2],
+
+  subgroup_strides = [1],
+  thread_strides = [1]
+>
+
+func.func @masked_read_write_contract(%arg0 : memref<?xf16>, %arg1 : memref<?x?xf16>, %arg2 : memref<?xf16>) {
+  %c0 = arith.constant 0 : index
+  %cst_6 = arith.constant 0.000000e+00 : f16
+  %acc = arith.constant dense<0.000000e+00> : vector<128xf16>
+
+  %reddim = memref.dim %arg0, %c0 : memref<?xf16>
+  %pardim = memref.dim %arg1, %c0 : memref<?x?xf16>
+  %arg0mask = vector.create_mask %reddim :  vector<256xi1>
+  %arg1mask = vector.create_mask %pardim, %reddim :  vector<128x256xi1>
+  %arg2mask = vector.create_mask %pardim :  vector<128xi1>
+  %opmask = vector.create_mask %reddim, %pardim :  vector<256x128xi1>
+  
+  %arg0read = vector.transfer_read %arg0[%c0], %cst_6, %arg0mask {in_bounds = [true]} : memref<?xf16>, vector<256xf16>
+  %arg0readl = iree_vector_ext.to_layout %arg0read to layout(#lhs) : vector<256xf16>
+  %arg1read = vector.transfer_read %arg1[%c0, %c0], %cst_6, %arg1mask {in_bounds = [true, true]} : memref<?x?xf16>, vector<128x256xf16>
+  %arg1readl = iree_vector_ext.to_layout %arg1read to layout(#rhs) : vector<128x256xf16>
+  %gemm = vector.mask %opmask { vector.contract {indexing_maps = [affine_map<(d0, d1) -> (d0)>, affine_map<(d0, d1) -> (d1, d0)>, affine_map<(d0, d1) -> (d1)>], iterator_types = ["reduction", "parallel"], kind = #vector.kind<add>} %arg0readl, %arg1readl, %acc : vector<256xf16>, vector<128x256xf16> into vector<128xf16> } : vector<256x128xi1> -> vector<128xf16>
+  %gemml = iree_vector_ext.to_layout %gemm to layout(#out) : vector<128xf16>
+  vector.transfer_write %gemml, %arg2[%c0], %arg2mask {in_bounds = [true]} : vector<128xf16>, memref<?xf16>
+
+  return
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.yield
+  }
+}
