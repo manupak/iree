@@ -135,6 +135,36 @@ static LogicalResult populateWarpAndThreadIndices(
   return success();
 }
 
+/// Given a distributed vector that has [B1xO1xE1]x[B2xO2xE2],
+/// convert that to B1 x B2 x O1 X O2 x E1 x E2 form.
+static VectorValue getInterleavedPackedForm(PatternRewriter& rewriter, VectorValue val, NestedLayoutAttr layout){
+  llvm::errs() << "layout=" << layout << "\n";
+  assert(val.getType().getRank() == layout.getRank());
+  Location loc = val.getDefiningOp()->getLoc();
+  SmallVector<int64_t> nonInterleavedPackedShape;
+  nonInterleavedPackedShape.reserve(layout.getRank() * 3);
+  for(int64_t undistributedDim : llvm::seq<int64_t>(layout.getRank())){
+    SmallVector<int64_t> packedShapePerDim = layout.getPackedShapeForUndistributedDim(undistributedDim);
+    nonInterleavedPackedShape.push_back(packedShapePerDim[1]);
+    nonInterleavedPackedShape.push_back(packedShapePerDim[2]);
+    nonInterleavedPackedShape.push_back(packedShapePerDim[4]);
+  }
+  VectorType nonInterleavedPackedType = VectorType::get(nonInterleavedPackedShape, val.getType().getElementType());
+  VectorValue nonInterleavedPackedShaped = rewriter.create<vector::ShapeCastOp>(loc, nonInterleavedPackedType, val);
+
+  // 0 1 2 3 4 5 ---> 0 3 1 4 2 5
+  SmallVector<int64_t> perm;
+  perm.reserve(layout.getRank() * 3);
+  for(int64_t tileGroupIdx : llvm::seq<int64_t>(3)){
+    for(int64_t undistributedDim : llvm::seq<int64_t>(layout.getRank())){
+      perm.push_back(tileGroupIdx + 3*undistributedDim);
+    }
+  }
+  llvm::errs() << "cast=" << nonInterleavedPackedShaped << "\n";
+  llvm::errs() << "perm="; llvm::interleaveComma(perm, llvm::errs()); llvm::errs() << "\n";
+  return rewriter.create<vector::TransposeOp>(loc, nonInterleavedPackedShaped, perm);
+}
+
 namespace {
 
 /// Pattern to distribute `vector.transfer_read` ops with nested layouts.
@@ -469,6 +499,7 @@ struct DistributeMultiReduction final
   LogicalResult matchAndRewrite(vector::MultiDimReductionOp multiReduceOp,
                                 DistributionSignature &signature,
                                 PatternRewriter &rewriter) const override {
+    Location loc = multiReduceOp.getLoc();
     VectorValue srcVector = multiReduceOp.getSource();
     Value acc = multiReduceOp.getAcc();
     Value res = multiReduceOp.getResult();
@@ -501,7 +532,20 @@ struct DistributeMultiReduction final
       disAcc = multiReduceOp.getAcc();
     }
 
-    Location loc = multiReduceOp.getLoc();
+    VectorValue mask = nullptr;
+    if(auto maskOp = multiReduceOp->getParentOfType<vector::MaskOp>()){
+      std::optional<DistributionSignature> signatureMask = getOpSignature(maskOp);
+      auto maskLayout = dyn_cast_or_null<NestedLayoutAttr>(signatureMask.value()[maskOp.getMask()]);
+      if (!maskLayout) {
+        return rewriter.notifyMatchFailure(maskOp,
+                                            "expected nested layout attr");
+      }
+      mask = getDistributed(rewriter, maskOp.getMask(), maskLayout);
+      mask = getInterleavedPackedForm(rewriter, mask, maskLayout);
+      Value passThruSrc = getCombiningIdentityValue(loc, rewriter, multiReduceOp.getKind(), disSrc.getType());
+      disSrc = cast<VectorValue>(rewriter.create<arith::SelectOp>(loc, mask, disSrc, passThruSrc).getResult());
+    }
+
     SmallVector<bool> reducedDims = multiReduceOp.getReductionMask();
     int64_t rank = srcVector.getType().getRank();
 
@@ -516,18 +560,21 @@ struct DistributeMultiReduction final
     }
     Value localInit = getCombiningIdentityValue(
         loc, rewriter, multiReduceOp.getKind(), disAcc.getType());
-    auto localReduction = rewriter.create<vector::MultiDimReductionOp>(
+    Value localReduction = rewriter.create<vector::MultiDimReductionOp>(
         loc, disSrc, localInit, distributedReductionMask,
         multiReduceOp.getKind());
+    if(mask){
+      localReduction = vector::maskOperation(rewriter, localReduction.getDefiningOp(), mask)->getResult(0);
+    }
 
     VectorValue locallyReduced;
     if (accVector) {
-      locallyReduced = dyn_cast<VectorValue>(localReduction.getResult());
+      locallyReduced = dyn_cast<VectorValue>(localReduction);
     } else {
       // Broadcast scalar accumulator to vector.
       VectorType vecType = VectorType::get(ArrayRef{int64_t(1)}, elemTy);
       locallyReduced = rewriter.create<vector::BroadcastOp>(
-          loc, vecType, localReduction.getResult());
+          loc, vecType, localReduction);
     }
 
     assert(locallyReduced && "result should have been a vector");
@@ -610,7 +657,6 @@ struct DistributeMultiReduction final
 
     for (unsigned i = 0; i < numElements; ++i) {
       Value extracted = rewriter.create<vector::ExtractOp>(loc, flat, i);
-
       // Reduce across all reduction dimensions 1-by-1.
       for (unsigned i = 0, e = reductionMask.size(); i != e; ++i) {
         if (reductionMask[i]) {
