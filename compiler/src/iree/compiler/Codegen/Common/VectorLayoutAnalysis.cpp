@@ -1106,7 +1106,7 @@ void EnforceLayout::visitMaskOp(vector::MaskOp mask, std::function<void (Distrib
     return getLatticeElement(yieldResult);
   });
   for (auto [result, yieldResult] : llvm::zip(resultLayouts, yieldLayouts)){
-    if (!yieldResult->hasLayout() && !yieldResult->isUninitialized()) {
+    if (!yieldResult->hasLayout() && !result->isUninitialized()) {
       ChangeResult changed = yieldResult->resolve(result);
       update(yieldResult, changed);
     }
