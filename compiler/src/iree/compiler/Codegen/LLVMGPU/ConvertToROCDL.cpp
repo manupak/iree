@@ -67,8 +67,24 @@ struct ReplaceGPUBarrierWithLDSBarrier
   }
 };
 
+struct ReplaceMaskedLoadWithSelects
+    : public OpRewritePattern<vector::MaskedLoadOp> {
+  using OpRewritePattern<vector::MaskedLoadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::MaskedLoadOp op,
+                                PatternRewriter &rewriter) const override {
+    OpBuilder::InsertionGuard guard(rewriter);
+    Type resType = op.getResult().getType();
+    auto load = rewriter.create<vector::LoadOp>(op.getLoc(), resType, op.getBase(), op.getIndices());
+    auto select = rewriter.create<arith::SelectOp>(op.getLoc(), op.getMask(), load, op.getPassThru());
+    rewriter.replaceOp(op, select);
+    return success();
+  }
+};
+
 static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
   patterns.add<ReplaceGPUBarrierWithLDSBarrier>(patterns.getContext());
+  patterns.add<ReplaceMaskedLoadWithSelects>(patterns.getContext());
 }
 
 } // namespace
